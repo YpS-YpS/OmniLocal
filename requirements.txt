@@ -12,7 +12,7 @@ dill
 accelerate
 timm
 einops==0.8.0
-paddlepaddle==2.7.3
+paddlepaddle==2.6.2
 paddleocr
 ruff==0.6.7
 pre-commit==3.8.0
