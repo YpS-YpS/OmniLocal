@@ -473,10 +473,19 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
         parsed_content_merged = ocr_text
     print('time to get parsed content:', time.time()-time1)
 
+    # Handle empty detection results gracefully
+    if len(filtered_boxes) == 0:
+        print('No UI elements detected - returning original image with empty results')
+        pil_img = Image.fromarray(image_source)
+        buffered = io.BytesIO()
+        pil_img.save(buffered, format="PNG")
+        encoded_image = base64.b64encode(buffered.getvalue()).decode('ascii')
+        return encoded_image, {}, []
+
     filtered_boxes = box_convert(boxes=filtered_boxes, in_fmt="xyxy", out_fmt="cxcywh")
 
     phrases = [i for i in range(len(filtered_boxes))]
-    
+
     # draw boxes
     if draw_bbox_config:
         annotated_frame, label_coordinates = annotate(image_source=image_source, boxes=filtered_boxes, logits=logits, phrases=phrases, **draw_bbox_config)
