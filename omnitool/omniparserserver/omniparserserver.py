@@ -5,6 +5,7 @@ python -m omniparserserver --som_model_path ../../weights/icon_detect/model.pt -
 import sys
 import os
 import time
+from typing import Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 import argparse
@@ -35,15 +36,44 @@ omniparser = Omniparser(config)
 
 class ParseRequest(BaseModel):
     base64_image: str
+    # Per-request OCR configuration overrides (optional - defaults to server startup config)
+    box_threshold: Optional[float] = None  # YOLO detection confidence threshold
+    iou_threshold: Optional[float] = None  # IOU threshold for overlap removal
+    use_paddleocr: Optional[bool] = None   # True = PaddleOCR, False = EasyOCR
+    text_threshold: Optional[float] = None # OCR confidence threshold for text detection
+    use_local_semantics: Optional[bool] = None  # Use caption model for icon labeling
+    scale_img: Optional[bool] = None       # Scale image before processing
+    imgsz: Optional[int] = None            # Image size for YOLO model
 
 @app.post("/parse/")
 async def parse(parse_request: ParseRequest):
     print('start parsing...')
     start = time.time()
-    dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image)
+
+    # Build override config from request (only include non-None values)
+    override_config = {}
+    if parse_request.box_threshold is not None:
+        override_config['BOX_TRESHOLD'] = parse_request.box_threshold
+    if parse_request.iou_threshold is not None:
+        override_config['IOU_THRESHOLD'] = parse_request.iou_threshold
+    if parse_request.use_paddleocr is not None:
+        override_config['use_paddleocr'] = parse_request.use_paddleocr
+    if parse_request.text_threshold is not None:
+        override_config['text_threshold'] = parse_request.text_threshold
+    if parse_request.use_local_semantics is not None:
+        override_config['use_local_semantics'] = parse_request.use_local_semantics
+    if parse_request.scale_img is not None:
+        override_config['scale_img'] = parse_request.scale_img
+    if parse_request.imgsz is not None:
+        override_config['imgsz'] = parse_request.imgsz
+
+    if override_config:
+        print(f'Using override config: {override_config}')
+
+    dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image, override_config)
     latency = time.time() - start
     print('time:', latency)
-    return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency}
+    return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency, 'config_used': override_config or 'defaults'}
 
 @app.get("/probe/")
 async def root():
