@@ -25,6 +25,7 @@ def parse_arguments():
     parser.add_argument('--use_paddleocr', action='store_true', help='Use PaddleOCR instead of EasyOCR')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host for the API')
     parser.add_argument('--port', type=int, default=8000, help='Port for the API')
+    parser.add_argument('--no-reload', action='store_true', help='Disable auto-reload (recommended for production/service manager)')
     args = parser.parse_args()
     return args
 
@@ -80,7 +81,9 @@ async def root():
     return {"message": "Omniparser API ready"}
 
 if __name__ == "__main__":
-    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=True)
+    # Use reload=False when --no-reload is passed (recommended for service manager)
+    use_reload = not getattr(args, 'no_reload', False)
+    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=use_reload)
 
 
 # '''
