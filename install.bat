@@ -50,7 +50,7 @@ if exist "%WHEEL_FILE%" (
     echo       Found existing wheel file, using it...
 ) else (
     echo       Downloading flash_attn wheel (122 MB)...
-    curl -L -o "%WHEEL_FILE%" "https://github.com/bdashore3/flash-attention/releases/download/v2.8.3/%WHEEL_FILE%"
+    curl -L -o "%WHEEL_FILE%" "https://drive.usercontent.google.com/download?id=1YwujFpvm-h8uNnM-MexEd4zvDqvR3-Gn&export=download&authuser=0"
     if errorlevel 1 (
         echo [WARNING] Could not download flash_attn wheel.
         echo           OmniParser will still work, but slower.
