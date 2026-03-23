@@ -1,0 +1,44 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Weights (downloaded during install)
+weights/icon_detect/model.pt
+weights/icon_caption_florence/model.safetensors
+weights/icon_caption_florence/config_native.json
+
+# HuggingFace cache (downloaded during install)
+.cache/
+
+# Wheel files (downloaded during install)
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+
+# Test outputs
+imgs/*_parsed.*
+imgs/*_qwen_ocr_result.*
+imgs/*_labeled.*
+=0.0.8
+=4.49.0
+.claude/
+build/
+*.egg-info/
