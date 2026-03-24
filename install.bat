@@ -1,90 +1,122 @@
 @echo off
 setlocal enabledelayedexpansion
+chcp 65001 >nul 2>nul
 
 echo ============================================
-echo   OmniParser Installation Script
-echo   Python 3.12 + CUDA 12.8 + PyTorch 2.8.0
+echo   OmniParser + Qwen OCR Installer
+echo   Portable Setup - Clone, Install, Done
 echo ============================================
 echo.
 
-:: Check Python version
-python --version 2>nul
-if errorlevel 1 (
-    echo [ERROR] Python not found! Please install Python 3.12
-    pause
-    exit /b 1
+:: ─── Step 1: Find Python ─────────────────────────────────────────────
+set PYTHON_CMD=
+set PYTHON_VER=
+
+:: Try 'python' first
+python --version >nul 2>nul
+if not errorlevel 1 (
+    for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYTHON_VER=%%v
+    set PYTHON_CMD=python
+    goto :check_version
 )
 
-:: Check if Python 3.12
-for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYVER=%%v
-echo Detected Python %PYVER%
-echo %PYVER% | findstr /b "3.12" >nul
-if errorlevel 1 (
-    echo [WARNING] Python 3.12 recommended. You have %PYVER%
-    echo           Flash attention wheel may not be compatible.
-    echo.
-    set /p CONTINUE="Continue anyway? (y/n): "
-    if /i not "!CONTINUE!"=="y" exit /b 1
+:: Try 'python3'
+python3 --version >nul 2>nul
+if not errorlevel 1 (
+    for /f "tokens=2 delims= " %%v in ('python3 --version 2^>^&1') do set PYTHON_VER=%%v
+    set PYTHON_CMD=python3
+    goto :check_version
 )
 
-echo.
-echo [1/4] Upgrading pip...
-python -m pip install --upgrade pip
-
-echo.
-echo [2/4] Installing frozen requirements (this may take a while)...
-pip install -r requirements-frozen.txt
-if errorlevel 1 (
-    echo [ERROR] Failed to install requirements!
-    pause
-    exit /b 1
+:: Try Windows Python Launcher 'py'
+py --version >nul 2>nul
+if not errorlevel 1 (
+    for /f "tokens=2 delims= " %%v in ('py --version 2^>^&1') do set PYTHON_VER=%%v
+    set PYTHON_CMD=py
+    goto :check_version
 )
 
+echo [ERROR] Python not found!
 echo.
-echo [3/4] Installing flash-attention for faster inference...
-echo       Downloading wheel from GitHub releases...
+echo Please install Python 3.10, 3.11, or 3.12 from:
+echo   https://www.python.org/downloads/
+echo.
+echo Make sure to check "Add Python to PATH" during installation.
+pause
+exit /b 1
 
-:: Check if wheel already exists
-set WHEEL_FILE=flash_attn-2.8.3+cu128torch2.8.0cxx11abiFALSE-cp312-cp312-win_amd64.whl
-if exist "%WHEEL_FILE%" (
-    echo       Found existing wheel file, using it...
+:check_version
+echo Found: %PYTHON_CMD% %PYTHON_VER%
+
+:: Extract major.minor
+for /f "tokens=1,2 delims=." %%a in ("%PYTHON_VER%") do (
+    set PY_MAJOR=%%a
+    set PY_MINOR=%%b
+)
+
+:: Check Python >= 3.10 and <= 3.12
+if %PY_MAJOR% LSS 3 goto :bad_version
+if %PY_MAJOR% GTR 3 goto :bad_version
+if %PY_MINOR% LSS 10 goto :bad_version
+if %PY_MINOR% GTR 12 goto :bad_version
+echo [OK] Python %PYTHON_VER% is supported.
+goto :create_venv
+
+:bad_version
+echo.
+echo [ERROR] Python %PYTHON_VER% is not supported.
+echo         Requires Python 3.10, 3.11, or 3.12.
+echo         Download from: https://www.python.org/downloads/
+pause
+exit /b 1
+
+:: ─── Step 2: Create virtual environment ──────────────────────────────
+:create_venv
+echo.
+if exist "%~dp0venv\Scripts\activate.bat" (
+    echo [OK] Virtual environment already exists.
 ) else (
-    echo       Downloading flash_attn wheel (122 MB)...
-    curl -L -o "%WHEEL_FILE%" "https://drive.usercontent.google.com/download?id=1YwujFpvm-h8uNnM-MexEd4zvDqvR3-Gn&export=download&authuser=0"
+    echo [1/3] Creating virtual environment...
+    %PYTHON_CMD% -m venv "%~dp0venv"
     if errorlevel 1 (
-        echo [WARNING] Could not download flash_attn wheel.
-        echo           OmniParser will still work, but slower.
-        goto :skip_flash
+        echo [ERROR] Failed to create virtual environment.
+        pause
+        exit /b 1
     )
 )
 
-pip install "%WHEEL_FILE%"
-if errorlevel 1 (
-    echo [WARNING] Failed to install flash_attn.
-    echo           OmniParser will still work, but slower.
-)
-:skip_flash
+:: Activate venv
+call "%~dp0venv\Scripts\activate.bat"
+echo [OK] Virtual environment activated.
 
+:: ─── Step 3: Run installer ───────────────────────────────────────────
 echo.
-echo [4/4] Verifying installation...
-python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
-python -c "import flash_attn; print(f'Flash Attention: {flash_attn.__version__}')" 2>nul || echo Flash Attention: Not installed (optional)
+echo [2/3] Running installer (this will take a while on first run)...
+echo.
 
+:: Set HF cache to project-local directory
+set HF_HOME=%~dp0.cache\huggingface
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+python "%~dp0install.py"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Installation failed. Check output above.
+    pause
+    exit /b 1
+)
+
+:: ─── Done ────────────────────────────────────────────────────────────
 echo.
 echo ============================================
 echo   Installation Complete!
 echo ============================================
 echo.
-echo NEXT STEPS:
-echo   1. Download model weights from:
-echo      https://huggingface.co/microsoft/OmniParser
+echo To start the server:
+echo   start_omni_server.bat
 echo.
-echo   2. Place weights in the 'weights' folder:
-echo      weights/
-echo        icon_detect/
-echo        icon_caption_florence/
-echo.
-echo   3. Run OmniParser server:
-echo      python omnitool/omniparserserver/omniparserserver.py --port 8100 --use_paddleocr --no-reload
+echo To parse a single image:
+echo   venv\Scripts\activate.bat
+echo   python parse_image.py your_screenshot.png
 echo.
 pause

@@ -48,7 +48,13 @@ if (-not $downloadResult) {
 } else {
     Write-Host "Installing Python for current user..."
     Start-Process -FilePath $pythonInstallerFilePath -Args "/quiet InstallAllUsers=0 PrependPath=0" -NoNewWindow -Wait
-    $pythonExecutablePath = "$userPythonPath\Python310\python.exe"
+    # Dynamically find the installed Python instead of hardcoding Python310
+    $pythonExecutablePath = Get-ChildItem -Path $userPythonPath -Filter python.exe -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object -Property FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $pythonExecutablePath) {
+        $pythonExecutablePath = "$userPythonPath\python.exe"
+    }
     $setAliasExpression = "Set-Alias -Name $pythonAlias -Value `"$pythonExecutablePath`""
     Add-Content -Path $PROFILE -Value $setAliasExpression
     Invoke-Expression $setAliasExpression

@@ -382,23 +382,20 @@ def predict(model, image, caption, box_threshold, text_threshold):
     return boxes, logits, phrases
 
 
-def predict_yolo(model, image, box_threshold, imgsz, scale_img, iou_threshold=0.7):
+def predict_yolo(model, image, box_threshold, imgsz, scale_img, iou_threshold=0.7, device=None):
     """ Use huggingface model to replace the original model
     """
     # model = model['model']
-    if scale_img:
-        result = model.predict(
+    predict_kwargs = dict(
         source=image,
         conf=box_threshold,
-        imgsz=imgsz,
-        iou=iou_threshold, # default 0.7
-        )
-    else:
-        result = model.predict(
-        source=image,
-        conf=box_threshold,
-        iou=iou_threshold, # default 0.7
-        )
+        iou=iou_threshold,
+    )
+    if scale_img and imgsz:
+        predict_kwargs['imgsz'] = imgsz
+    if device:
+        predict_kwargs['device'] = device
+    result = model.predict(**predict_kwargs)
     boxes = result[0].boxes.xyxy#.tolist() # in pixel space
     conf = result[0].boxes.conf
     phrases = [str(i) for i in range(len(boxes))]
@@ -411,11 +408,13 @@ def int_box_area(box, w, h):
     area = (int_box[2] - int_box[0]) * (int_box[3] - int_box[1])
     return area
 
-def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_TRESHOLD=0.05, output_coord_in_ratio=False, ocr_bbox=None, text_scale=0.4, text_padding=5, draw_bbox_config=None, caption_model_processor=None, ocr_text=[], use_local_semantics=True, iou_threshold=0.01,prompt=None, scale_img=False, imgsz=None, batch_size=128):
+def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_TRESHOLD=0.05, output_coord_in_ratio=False, ocr_bbox=None, text_scale=0.4, text_padding=5, draw_bbox_config=None, caption_model_processor=None, ocr_text=[], use_local_semantics=True, iou_threshold=0.01,prompt=None, scale_img=False, imgsz=None, batch_size=128, precomputed_yolo=None, yolo_device=None):
     """Process either an image path or Image object
-    
+
     Args:
         image_source: Either a file path (str) or PIL Image object
+        precomputed_yolo: Optional tuple of (xyxy, logits, phrases) from parallel YOLO run
+        yolo_device: Device to run YOLO on (e.g. 'cuda:1')
         ...
     """
     if isinstance(image_source, str):
@@ -424,8 +423,11 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
     w, h = image_source.size
     if not imgsz:
         imgsz = (h, w)
-    # print('image size:', w, h)
-    xyxy, logits, phrases = predict_yolo(model=model, image=image_source, box_threshold=BOX_TRESHOLD, imgsz=imgsz, scale_img=scale_img, iou_threshold=0.1)
+    # Use precomputed YOLO results if available (from parallel execution)
+    if precomputed_yolo is not None:
+        xyxy, logits, phrases = precomputed_yolo
+    else:
+        xyxy, logits, phrases = predict_yolo(model=model, image=image_source, box_threshold=BOX_TRESHOLD, imgsz=imgsz, scale_img=scale_img, iou_threshold=0.1, device=yolo_device)
     xyxy = xyxy / torch.Tensor([w, h, w, h]).to(xyxy.device)
     image_source = np.asarray(image_source)
     phrases = [str(i) for i in range(len(phrases))]
@@ -518,7 +520,7 @@ def get_xywh_yolo(input):
     x, y, w, h = int(x), int(y), int(w), int(h)
     return x, y, w, h
 
-def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, output_bb_format='xywh', goal_filtering=None, easyocr_args=None, use_paddleocr=False):
+def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, output_bb_format='xywh', goal_filtering=None, easyocr_args=None, use_paddleocr=False, qwen_ocr=None):
     if isinstance(image_source, str):
         image_source = Image.open(image_source)
     if image_source.mode == 'RGBA':
@@ -526,7 +528,40 @@ def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, out
         image_source = image_source.convert('RGB')
     image_np = np.array(image_source)
     w, h = image_source.size
-    if use_paddleocr:
+
+    if qwen_ocr is not None:
+        # Hybrid mode: PaddleOCR detection + Qwen2.5-VL recognition
+        # PaddleOCR finds WHERE text is (good at this even for stylized fonts)
+        # Qwen reads WHAT the text says (handles artistic/game fonts)
+        # Use full pipeline (rec=True) to avoid PaddleOCR det-only bug, discard its text
+        full_result = paddle_ocr.ocr(image_np, cls=False)[0]
+        if full_result is None:
+            full_result = []
+        # Extract only the detection polygons, ignore PaddleOCR's text recognition
+        coord = []
+        bboxes_pixel = []
+        for item in full_result:
+            polygon = item[0]
+            coord.append(polygon)
+            x1 = int(min(p[0] for p in polygon))
+            y1 = int(min(p[1] for p in polygon))
+            x2 = int(max(p[0] for p in polygon))
+            y2 = int(max(p[1] for p in polygon))
+            bboxes_pixel.append([x1, y1, x2, y2])
+        # Qwen reads each detected region
+        if bboxes_pixel:
+            text = qwen_ocr.recognize_regions(image_source, bboxes_pixel)
+            # Filter out empty recognitions
+            filtered = [(t, c, b) for t, c, b in zip(text, coord, bboxes_pixel) if t.strip()]
+            if filtered:
+                text, coord, bboxes_pixel = zip(*filtered)
+                text, coord, bboxes_pixel = list(text), list(coord), list(bboxes_pixel)
+            else:
+                text, coord, bboxes_pixel = [], [], []
+        else:
+            text = []
+        print(f'[QwenOCR] Detected {len(full_result)} regions, recognized {len(text)} texts')
+    elif use_paddleocr:
         if easyocr_args is None:
             text_threshold = 0.5
         else:
@@ -542,6 +577,7 @@ def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, out
         result = reader.readtext(image_np, **easyocr_args)
         coord = [item[0] for item in result]
         text = [item[1] for item in result]
+
     if display_img:
         opencv_img = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         bb = []
@@ -552,8 +588,17 @@ def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, out
         #  matplotlib expects RGB
         plt.imshow(cv2.cvtColor(opencv_img, cv2.COLOR_BGR2RGB))
     else:
-        if output_bb_format == 'xywh':
-            bb = [get_xywh(item) for item in coord]
-        elif output_bb_format == 'xyxy':
-            bb = [get_xyxy(item) for item in coord]
+        if qwen_ocr is not None and bboxes_pixel:
+            # Already have xyxy pixel coords from detection
+            if output_bb_format == 'xyxy':
+                bb = [tuple(b) for b in bboxes_pixel]
+            elif output_bb_format == 'xywh':
+                bb = [(b[0], b[1], b[2]-b[0], b[3]-b[1]) for b in bboxes_pixel]
+        elif coord:
+            if output_bb_format == 'xywh':
+                bb = [get_xywh(item) for item in coord]
+            elif output_bb_format == 'xyxy':
+                bb = [get_xyxy(item) for item in coord]
+        else:
+            bb = []
     return (text, bb), goal_filtering

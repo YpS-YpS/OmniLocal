@@ -1,51 +1,79 @@
 @echo off
-REM Start Omniparser Server instances in Windows Terminal tabs
-REM Prompts for number of instances, OCR engine choice, and creates them on consecutive ports starting from 8000
+REM Start Omniparser Server — Maximum Speed Edition
+REM Supports: Standard mode, Qwen OCR, and MAXIMUM SPEED (vLLM + dual GPU)
 
 setlocal enabledelayedexpansion
 
 REM Store the script directory
 set "SCRIPT_DIR=%~dp0"
 
-REM Get number of instances from user
-set /p NUM_INSTANCES="Enter number of Omniparser instances to start (1-10) [default: 2]: "
+REM Activate virtual environment if present
+if exist "%SCRIPT_DIR%venv\Scripts\activate.bat" (
+    call "%SCRIPT_DIR%venv\Scripts\activate.bat"
+) else (
+    echo [WARN] No venv found. Run install.bat first.
+    echo        Continuing with system Python...
+)
 
-REM Validate input
-if "%NUM_INSTANCES%"=="" set NUM_INSTANCES=2
+REM Set HuggingFace cache to project-local directory
+set HF_HOME=%SCRIPT_DIR%.cache\huggingface
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+REM Get number of instances from user
+set /p NUM_INSTANCES="Enter number of Omniparser instances to start (1-10) [default: 1]: "
+if "%NUM_INSTANCES%"=="" set NUM_INSTANCES=1
 if %NUM_INSTANCES% LSS 1 set NUM_INSTANCES=1
 if %NUM_INSTANCES% GTR 10 set NUM_INSTANCES=10
 
 REM Get OCR engine choice
 echo.
-echo OCR Engine Options:
-echo   1. PaddleOCR (default - better for standard text)
-echo   2. EasyOCR (better for stylized/gaming fonts)
+echo =========================================
+echo   OCR Engine Options
+echo =========================================
+echo   1. PaddleOCR (standard text)
+echo   2. EasyOCR
+echo   3. Qwen2.5-VL local (batched, hash cache, ~5-10s per frame)
+echo   4. MAXIMUM SPEED: Qwen2.5-VL + vLLM (requires Docker, ~1-2s per frame)
+echo   5. MAXIMUM SPEED: Qwen2.5-VL local + dual GPU (~5-8s per frame)
 echo.
-set /p OCR_CHOICE="Select OCR engine [1]: "
+set /p OCR_CHOICE="Select OCR engine [3]: "
 
-if "%OCR_CHOICE%"=="" set OCR_CHOICE=1
+if "%OCR_CHOICE%"=="" set OCR_CHOICE=3
+
 if "%OCR_CHOICE%"=="1" (
     set "OCR_FLAG=--use_paddleocr"
     set "OCR_NAME=PaddleOCR"
-) else (
+) else if "%OCR_CHOICE%"=="2" (
     set "OCR_FLAG="
     set "OCR_NAME=EasyOCR"
+) else if "%OCR_CHOICE%"=="3" (
+    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8"
+    set "OCR_NAME=Qwen2.5-VL [Speed]"
+) else if "%OCR_CHOICE%"=="4" (
+    set "OCR_FLAG=--use_qwen_ocr --vllm_url http://localhost:8100 --gpu_detect cuda:1 --use_hash_cache"
+    set "OCR_NAME=MAX SPEED [vLLM]"
+    echo.
+    echo Make sure vLLM is running! Use start_vllm.bat first.
+    echo.
+) else if "%OCR_CHOICE%"=="5" (
+    set "OCR_FLAG=--use_qwen_ocr --gpu_detect cuda:1 --use_hash_cache --ocr_batch_size 8"
+    set "OCR_NAME=MAX SPEED [Dual GPU]"
+) else (
+    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8"
+    set "OCR_NAME=Qwen2.5-VL [Speed]"
 )
 
 echo.
-echo Starting %NUM_INSTANCES% Omniparser server instance(s) with %OCR_NAME%...
-echo NOTE: Per-request OCR config can override this default.
+echo Starting %NUM_INSTANCES% Omniparser instance(s) with %OCR_NAME%...
 echo.
 
 REM Check if Windows Terminal is available
 where wt >nul 2>nul
 if %errorlevel% neq 0 (
-    echo Windows Terminal not found. Please install Windows Terminal for multi-tab support.
-    echo Falling back to separate windows...
-
+    echo Windows Terminal not found. Falling back to separate windows...
     for /L %%i in (1,1,%NUM_INSTANCES%) do (
         set /a PORT=8000+%%i-1
-        start "Omniparser !PORT!" cmd /k "cd /d !SCRIPT_DIR!omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port !PORT!"
+        start "Omniparser !PORT!" cmd /k "cd /d !SCRIPT_DIR!omnitool\omniparserserver && python -m omniparserserver !OCR_FLAG! --port !PORT!"
     )
     goto :end
 )
@@ -56,7 +84,6 @@ echo Launching Windows Terminal with %NUM_INSTANCES% tab(s)...
 echo Ports: 8000 to %LAST_PORT%
 echo.
 
-REM Build command dynamically based on instance count
 if %NUM_INSTANCES%==1 (
     wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000"
     goto :end
@@ -77,19 +104,16 @@ if %NUM_INSTANCES%==4 (
     goto :end
 )
 
-if %NUM_INSTANCES%==5 (
+if %NUM_INSTANCES% GEQ 5 (
     wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "Omniparser 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "Omniparser 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003" ; nt --title "Omniparser 8004 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8004"
-    goto :end
-)
 
-if %NUM_INSTANCES% GEQ 6 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "Omniparser 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "Omniparser 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003" ; nt --title "Omniparser 8004 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8004" ; nt --title "Omniparser 8005 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8005"
-
-    REM Launch remaining instances (7-10) in additional tabs
-    for /L %%i in (7,1,%NUM_INSTANCES%) do (
-        set /a PORT=8000+%%i-1
-        timeout /t 1 /nobreak >nul
-        wt -w 0 nt --title "Omniparser !PORT! [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port !PORT!"
+    REM Launch remaining instances (6-10) in additional tabs
+    if %NUM_INSTANCES% GEQ 6 (
+        for /L %%i in (6,1,%NUM_INSTANCES%) do (
+            set /a PORT=8000+%%i-1
+            timeout /t 1 /nobreak >nul
+            wt -w 0 nt --title "Omniparser !PORT! [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port !PORT!"
+        )
     )
     goto :end
 )
