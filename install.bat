@@ -3,12 +3,12 @@ setlocal enabledelayedexpansion
 chcp 65001 >nul 2>nul
 
 echo ============================================
-echo   OmniParser + Qwen OCR Installer
-echo   Portable Setup - Clone, Install, Done
+echo   OmniParser + Qwen OCR Speed Pipeline
+echo   Installer
 echo ============================================
 echo.
 
-:: ─── Step 1: Find Python ─────────────────────────────────────────────
+:: --- Step 1: Find Python ---
 set PYTHON_CMD=
 set PYTHON_VER=
 
@@ -70,13 +70,13 @@ echo         Download from: https://www.python.org/downloads/
 pause
 exit /b 1
 
-:: ─── Step 2: Create virtual environment ──────────────────────────────
+:: --- Step 2: Create virtual environment ---
 :create_venv
 echo.
 if exist "%~dp0venv\Scripts\activate.bat" (
     echo [OK] Virtual environment already exists.
 ) else (
-    echo [1/3] Creating virtual environment...
+    echo Creating virtual environment...
     %PYTHON_CMD% -m venv "%~dp0venv"
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual environment.
@@ -89,24 +89,25 @@ if exist "%~dp0venv\Scripts\activate.bat" (
 call "%~dp0venv\Scripts\activate.bat"
 echo [OK] Virtual environment activated.
 
-:: ─── Step 3: Run installer ───────────────────────────────────────────
-echo.
-echo [2/3] Running installer (this will take a while on first run)...
-echo.
-
-:: Set HF cache to project-local directory
+:: --- Step 3: Set environment ---
 set HF_HOME=%~dp0.cache\huggingface
 set HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
-python "%~dp0install.py"
+:: --- Step 4: Run installer ---
+echo.
+echo Running installer (this may take 5-15 minutes on first run)...
+echo Installation log will be saved to logs\install_*.log
+echo.
+
+python "%~dp0install.py" %*
 if errorlevel 1 (
     echo.
-    echo [ERROR] Installation failed. Check output above.
+    echo [ERROR] Installation had failures. Check output above and log file.
     pause
     exit /b 1
 )
 
-:: ─── Done ────────────────────────────────────────────────────────────
+:: --- Done ---
 echo.
 echo ============================================
 echo   Installation Complete!

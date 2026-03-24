@@ -1,235 +1,471 @@
-"""OmniParser + Qwen OCR installer.
+"""OmniParser + Qwen OCR Speed Pipeline Installer.
 
-Called by install.bat after venv is created and activated.
-Handles: pip packages, CUDA detection, weights download, model caching.
+Handles: Python validation, pip packages, CUDA detection, weights download,
+flash attention, HuggingFace model caching. Generates installation log.
+
+Standalone: install.bat -> install.py
+RPX plugin: rpx_setup executor -> python install.py [--silent] [--log-dir <path>]
 """
 
 import os
 import sys
 import subprocess
 import shutil
-import urllib.request
 import time
+import traceback
+import argparse
+import logging
+from datetime import datetime
+from pathlib import Path
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = Path(__file__).parent.resolve()
 
-# ── Google Drive file IDs ────────────────────────────────────────────
-# Update these if you re-upload to a different location.
+# -- Google Drive file IDs -------------------------------------------------
 GDRIVE_FILES = {
     "weights": {
         "id": "1Otyc6swsZkzNyDHdPvPIXbyCky6QhNkg",
-        "dest": os.path.join(SCRIPT_DIR, "weights.zip"),
+        "dest": SCRIPT_DIR / "weights.zip",
         "desc": "Model weights (YOLO + Florence2, ~1.1 GB)",
     },
-    # Optional: flash_attn wheel for advanced users
     "flash_attn": {
-        "id": "1n0l5gP4xmtABP7LsfuIrROf1J3_CKTrg",
-        "dest": os.path.join(SCRIPT_DIR, "flash_attn.whl"),
-        "desc": "Flash Attention wheel (~128 MB, optional)",
+        "id": "1YwujFpvm-h8uNnM-MexEd4zvDqvR3-Gn",
+        "dest": SCRIPT_DIR / "flash_attn.whl",
+        "desc": "Flash Attention wheel (~128 MB)",
     },
 }
 
-# ── HuggingFace models to pre-cache ─────────────────────────────────
+# -- HuggingFace models to pre-cache ---------------------------------------
 HF_MODELS = [
-    "Qwen/Qwen2.5-VL-3B-Instruct",     # Qwen OCR recognition
-    "microsoft/Florence-2-base",          # Florence2 processor files
+    "Qwen/Qwen2.5-VL-3B-Instruct",
+    "microsoft/Florence-2-base",
+]
+
+# -- Verification checks ----------------------------------------------------
+VERIFY_IMPORTS = [
+    ("PyTorch",      "import torch; v=torch.__version__; c='YES' if torch.cuda.is_available() else 'NO'; print(f'PyTorch {v}, CUDA: {c}')"),
+    ("Transformers", "import transformers; print(f'Transformers {transformers.__version__}')"),
+    ("PaddleOCR",    "import paddleocr; print(f'PaddleOCR {paddleocr.__version__}')"),
+    ("Ultralytics",  "import ultralytics; print(f'Ultralytics {ultralytics.__version__}')"),
+    ("aiohttp",      "import aiohttp; print(f'aiohttp {aiohttp.__version__}')"),
+    ("bitsandbytes", "import bitsandbytes; print(f'bitsandbytes {bitsandbytes.__version__}')"),
 ]
 
 
-def run(cmd, desc=None, check=True):
-    """Run a command and print output."""
+# ==========================================================================
+#  Logging
+# ==========================================================================
+
+class InstallLogger:
+    """Dual-output logger: console + log file with timestamps."""
+
+    def __init__(self, log_dir: Path = None):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if log_dir is None:
+            log_dir = SCRIPT_DIR / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path = log_dir / f"install_{ts}.log"
+        self.fh = open(self.log_path, "w", encoding="utf-8")
+        self.pass_count = 0
+        self.fail_count = 0
+        self.warn_count = 0
+        self.steps = []
+
+    def _ts(self):
+        return datetime.now().strftime("%H:%M:%S")
+
+    def _write(self, level, msg):
+        line = f"[{self._ts()}] [{level}] {msg}"
+        self.fh.write(line + "\n")
+        self.fh.flush()
+
+    def info(self, msg):
+        print(f"  {msg}")
+        self._write("INFO", msg)
+
+    def ok(self, msg):
+        print(f"  [OK] {msg}")
+        self._write("PASS", msg)
+
+    def warn(self, msg):
+        print(f"  [WARN] {msg}")
+        self._write("WARN", msg)
+        self.warn_count += 1
+
+    def fail(self, msg):
+        print(f"  [FAIL] {msg}")
+        self._write("FAIL", msg)
+
+    def error_trace(self, msg, exc=None):
+        """Log error with full stack trace and suggestion."""
+        print(f"  [ERROR] {msg}")
+        self._write("ERROR", msg)
+        if exc:
+            tb = traceback.format_exc()
+            print(f"  Stack trace:\n{tb}")
+            self._write("TRACE", tb)
+
+    def step_start(self, num, total, title):
+        header = f"[{num}/{total}] {title}"
+        print(f"\n{'='*60}")
+        print(f"  {header}")
+        print(f"{'='*60}")
+        self._write("STEP", header)
+        self.steps.append({"title": title, "status": "running", "start": time.time()})
+
+    def step_pass(self):
+        if self.steps:
+            self.steps[-1]["status"] = "PASS"
+            self.steps[-1]["elapsed"] = time.time() - self.steps[-1]["start"]
+            self.pass_count += 1
+
+    def step_fail(self):
+        if self.steps:
+            self.steps[-1]["status"] = "FAIL"
+            self.steps[-1]["elapsed"] = time.time() - self.steps[-1]["start"]
+            self.fail_count += 1
+
+    def print_summary(self):
+        print(f"\n{'='*60}")
+        print(f"  Installation Summary")
+        print(f"{'='*60}")
+        for s in self.steps:
+            icon = "[PASS]" if s["status"] == "PASS" else "[FAIL]"
+            elapsed = s.get("elapsed", 0)
+            print(f"  {icon} {s['title']} ({elapsed:.1f}s)")
+        print(f"\n  Results: {self.pass_count} passed, {self.fail_count} failed, {self.warn_count} warnings")
+        print(f"  Log file: {self.log_path}")
+        self._write("SUMMARY", f"{self.pass_count} passed, {self.fail_count} failed, {self.warn_count} warnings")
+
+    def close(self):
+        self.fh.close()
+
+
+# ==========================================================================
+#  Helpers
+# ==========================================================================
+
+def run_cmd(cmd, log: InstallLogger, desc=None, check=True, timeout=600):
+    """Run a shell command with full output capture and logging."""
     if desc:
-        print(f"\n{'─'*50}")
-        print(f"  {desc}")
-        print(f"{'─'*50}")
-    result = subprocess.run(cmd, shell=True)
-    if check and result.returncode != 0:
-        print(f"\n[ERROR] Command failed: {cmd}")
+        log.info(f"Running: {desc}")
+    log._write("CMD", cmd)
+
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        if result.stdout.strip():
+            for line in result.stdout.strip().split("\n")[-20:]:
+                log._write("STDOUT", line)
+        if result.stderr.strip():
+            for line in result.stderr.strip().split("\n")[-10:]:
+                log._write("STDERR", line)
+
+        if check and result.returncode != 0:
+            log.fail(f"Command failed (exit {result.returncode}): {cmd}")
+            if result.stderr.strip():
+                last_err = result.stderr.strip().split("\n")[-3:]
+                for line in last_err:
+                    log.info(f"  stderr: {line}")
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        log.fail(f"Command timed out after {timeout}s: {cmd}")
         return False
-    return True
+    except Exception as e:
+        log.error_trace(f"Command exception: {cmd}", exc=e)
+        return False
 
 
-def gdrive_download(file_id, dest, desc=""):
+def gdrive_download(file_id, dest: Path, desc, log: InstallLogger):
     """Download a file from Google Drive with large-file bypass."""
-    if os.path.exists(dest):
-        print(f"  [SKIP] {desc} — already downloaded")
+    if dest.exists() and dest.stat().st_size > 1000:
+        log.ok(f"{desc} -- already downloaded ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
         return True
 
     url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
-    print(f"  Downloading {desc}...")
-    print(f"  URL: {url}")
+    log.info(f"Downloading {desc}...")
 
-    # Use curl (built into Windows 10+) for progress bar
-    result = subprocess.run(
+    success = run_cmd(
         f'curl -L -o "{dest}" "{url}"',
-        shell=True,
+        log, desc=f"curl download: {desc}", check=True, timeout=600
     )
-    if result.returncode != 0:
-        print(f"  [ERROR] Download failed for {desc}")
+    if not success or not dest.exists() or dest.stat().st_size < 1000:
+        log.fail(f"Download failed for {desc}")
+        log.info(f"  Manual download: https://drive.google.com/file/d/{file_id}")
+        log.info(f"  Save to: {dest}")
+        if dest.exists():
+            dest.unlink()
         return False
-    print(f"  [OK] Downloaded: {dest}")
+
+    log.ok(f"Downloaded: {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
     return True
 
 
-def check_weights():
-    """Check if weights are present, download if not."""
-    weights_dir = os.path.join(SCRIPT_DIR, "weights")
-    yolo_model = os.path.join(weights_dir, "icon_detect", "model.pt")
-    florence_model = os.path.join(weights_dir, "icon_caption_florence", "model.safetensors")
+# ==========================================================================
+#  Installation Steps
+# ==========================================================================
 
-    if os.path.exists(yolo_model) and os.path.exists(florence_model):
-        print("  [OK] Weights already present")
+def step_pip_upgrade(log: InstallLogger):
+    return run_cmd("python -m pip install --upgrade pip", log, "Upgrading pip")
+
+
+def step_pytorch(log: InstallLogger):
+    """Install PyTorch with CUDA. Tries 12.8 then 12.4."""
+    try:
+        result = subprocess.run(
+            'python -c "import torch; print(torch.__version__, torch.cuda.is_available())"',
+            shell=True, capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and "True" in result.stdout:
+            ver = result.stdout.strip().split()[0]
+            log.ok(f"PyTorch {ver} already installed with CUDA")
+            return True
+    except Exception:
+        pass
+
+    log.info("PyTorch not found or CUDA not available, installing...")
+
+    if run_cmd(
+        "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128",
+        log, "Installing PyTorch + CUDA 12.8", timeout=600
+    ):
         return True
 
-    # Download weights zip
+    log.warn("CUDA 12.8 failed, trying CUDA 12.4...")
+    if run_cmd(
+        "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124",
+        log, "Installing PyTorch + CUDA 12.4 (fallback)", timeout=600
+    ):
+        return True
+
+    log.fail("Could not install PyTorch with CUDA")
+    log.info("  Suggestion: Install manually from https://pytorch.org/get-started/locally/")
+    log.info("  Then re-run this installer.")
+    return False
+
+
+def step_requirements(log: InstallLogger):
+    """Install pip requirements."""
+    req_file = SCRIPT_DIR / "requirements.txt"
+    if not req_file.exists():
+        log.fail(f"requirements.txt not found at {req_file}")
+        return False
+    return run_cmd(f'pip install -r "{req_file}"', log, "Installing requirements.txt", timeout=600)
+
+
+def step_qwen_requirements(log: InstallLogger):
+    """Install Qwen OCR extra requirements if file exists."""
+    qwen_req = SCRIPT_DIR / "requirements-qwen-ocr.txt"
+    if not qwen_req.exists():
+        log.info("No requirements-qwen-ocr.txt found, skipping")
+        return True
+    if qwen_req.stat().st_size < 5:
+        log.info("requirements-qwen-ocr.txt is empty, skipping")
+        return True
+    return run_cmd(f'pip install -r "{qwen_req}"', log, "Installing Qwen OCR requirements", timeout=600)
+
+
+def step_weights(log: InstallLogger):
+    """Download and extract model weights (YOLO + Florence2)."""
+    weights_dir = SCRIPT_DIR / "weights"
+    yolo_model = weights_dir / "icon_detect" / "model.pt"
+    florence_model = weights_dir / "icon_caption_florence" / "model.safetensors"
+
+    if yolo_model.exists() and florence_model.exists():
+        log.ok("Model weights already present")
+        return True
+
     winfo = GDRIVE_FILES["weights"]
-    if not gdrive_download(winfo["id"], winfo["dest"], winfo["desc"]):
-        print("\n  [ERROR] Could not download weights.")
-        print("  Manual download: https://drive.google.com/file/d/" + winfo["id"])
+    if not gdrive_download(winfo["id"], winfo["dest"], winfo["desc"], log):
         return False
 
-    # Extract
-    print("  Extracting weights...")
-    import zipfile
-    with zipfile.ZipFile(winfo["dest"], "r") as zf:
-        zf.extractall(SCRIPT_DIR)
-    os.remove(winfo["dest"])
-    print("  [OK] Weights extracted")
-    return True
+    log.info("Extracting weights...")
+    try:
+        import zipfile
+        with zipfile.ZipFile(winfo["dest"], "r") as zf:
+            zf.extractall(SCRIPT_DIR)
+        winfo["dest"].unlink()
+        log.ok("Weights extracted")
+
+        # Verify
+        if yolo_model.exists() and florence_model.exists():
+            log.ok(f"Verified: YOLO ({yolo_model.stat().st_size / 1024 / 1024:.0f} MB), "
+                   f"Florence2 ({florence_model.stat().st_size / 1024 / 1024:.0f} MB)")
+            return True
+        else:
+            log.fail("Extraction completed but expected files not found")
+            log.info(f"  Expected: {yolo_model}")
+            log.info(f"  Expected: {florence_model}")
+            return False
+    except Exception as e:
+        log.error_trace("Failed to extract weights", exc=e)
+        return False
 
 
-def cache_hf_models():
+def step_flash_attention(log: InstallLogger):
+    """Download and install Flash Attention wheel (optional)."""
+    # Check if already installed
+    result = subprocess.run(
+        'python -c "import flash_attn; print(flash_attn.__version__)"',
+        shell=True, capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        log.ok(f"Flash Attention {result.stdout.strip()} already installed")
+        return True
+
+    finfo = GDRIVE_FILES["flash_attn"]
+
+    # Check for existing .whl files in directory
+    existing_wheels = list(SCRIPT_DIR.glob("flash_attn*.whl"))
+    if existing_wheels:
+        wheel_path = existing_wheels[0]
+        log.info(f"Found existing wheel: {wheel_path.name}")
+    else:
+        if not gdrive_download(finfo["id"], finfo["dest"], finfo["desc"], log):
+            log.warn("Flash Attention download failed (optional -- SDPA will be used instead)")
+            return True  # Not a hard failure
+        wheel_path = finfo["dest"]
+
+    if run_cmd(f'pip install "{wheel_path}"', log, "Installing Flash Attention wheel", timeout=300):
+        log.ok("Flash Attention installed")
+        return True
+    else:
+        log.warn("Flash Attention install failed (optional -- SDPA will be used instead)")
+        log.info("  This is normal if your CUDA version doesn't match the wheel.")
+        log.info("  The server will use PyTorch's SDPA (Scaled Dot Product Attention) instead.")
+        return True  # Not a hard failure
+
+
+def step_hf_cache(log: InstallLogger):
     """Pre-download HuggingFace models to local cache."""
-    cache_dir = os.path.join(SCRIPT_DIR, ".cache", "huggingface")
-    os.environ["HF_HOME"] = cache_dir
+    cache_dir = SCRIPT_DIR / ".cache" / "huggingface"
+    os.environ["HF_HOME"] = str(cache_dir)
     os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
     try:
         from huggingface_hub import snapshot_download, HfApi
     except ImportError:
-        print("  [SKIP] huggingface_hub not installed, models will download on first run")
+        log.warn("huggingface_hub not installed, models will download on first run")
         return True
 
-    # Check if token is available
     api = HfApi()
     token = api.token
+    all_ok = True
 
     for model_id in HF_MODELS:
-        print(f"  Caching {model_id}...")
+        log.info(f"Caching {model_id}...")
         try:
             snapshot_download(
                 model_id,
-                cache_dir=os.path.join(cache_dir, "hub"),
+                cache_dir=str(cache_dir / "hub"),
                 token=token,
             )
-            print(f"  [OK] {model_id} cached")
+            log.ok(f"{model_id} cached")
         except Exception as e:
             err = str(e)
             if "401" in err or "403" in err:
-                print(f"  [WARN] {model_id} requires authentication.")
-                print(f"         Run: python -c \"from huggingface_hub import login; login()\"")
-                print(f"         Then re-run install.bat")
+                log.warn(f"{model_id} requires authentication")
+                log.info('  Run: python -c "from huggingface_hub import login; login()"')
+                log.info("  Then re-run installer.")
             elif "404" in err:
-                print(f"  [WARN] {model_id} not found. Check model ID.")
+                log.warn(f"{model_id} not found -- check model ID")
             else:
-                print(f"  [WARN] Could not cache {model_id}: {err[:200]}")
-                print(f"         Model will download on first server start.")
-    return True
+                log.warn(f"Could not cache {model_id}: {err[:200]}")
+                log.info("  Model will download on first server start.")
+            all_ok = False
+
+    return all_ok
 
 
-def main():
-    print(f"Python: {sys.version}")
-    print(f"Install dir: {SCRIPT_DIR}")
-
-    # ── 1. Upgrade pip ────────────────────────────────────────────────
-    if not run("python -m pip install --upgrade pip", "Upgrading pip"):
-        return 1
-
-    # ── 2. Install PyTorch with CUDA ──────────────────────────────────
-    # Check if torch already installed with CUDA
-    try:
-        import torch
-        if torch.cuda.is_available():
-            print(f"\n[OK] PyTorch {torch.__version__} already installed with CUDA")
-        else:
-            print(f"\n[WARN] PyTorch {torch.__version__} installed but CUDA not available")
-            raise ImportError("Reinstall needed")
-    except ImportError:
-        if not run(
-            "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128",
-            "Installing PyTorch with CUDA 12.8",
-        ):
-            # Fallback to cu124
-            print("  Trying CUDA 12.4...")
-            if not run(
-                "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124",
-                "Installing PyTorch with CUDA 12.4 (fallback)",
-            ):
-                print("[ERROR] Could not install PyTorch with CUDA.")
-                print("        Install manually: https://pytorch.org/get-started/locally/")
-                return 1
-
-    # ── 3. Install requirements ───────────────────────────────────────
-    req_file = os.path.join(SCRIPT_DIR, "requirements.txt")
-    if not run(f'pip install -r "{req_file}"', "Installing requirements"):
-        return 1
-
-    # ── 4. Install Qwen OCR requirements ──────────────────────────────
-    qwen_req = os.path.join(SCRIPT_DIR, "requirements-qwen-ocr.txt")
-    if os.path.exists(qwen_req):
-        if not run(f'pip install -r "{qwen_req}"', "Installing Qwen OCR requirements"):
-            return 1
-
-    # ── 5. Download weights ───────────────────────────────────────────
-    print(f"\n{'─'*50}")
-    print("  Checking model weights")
-    print(f"{'─'*50}")
-    check_weights()
-
-    # ── 6. Pre-cache HuggingFace models ───────────────────────────────
-    print(f"\n{'─'*50}")
-    print("  Pre-caching HuggingFace models")
-    print(f"{'─'*50}")
-    cache_hf_models()
-
-    # ── 7. Verify installation ────────────────────────────────────────
-    print(f"\n{'─'*50}")
-    print("  Verifying installation")
-    print(f"{'─'*50}")
-
-    checks = [
-        ("PyTorch", "import torch; print(f'  PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')"),
-        ("Transformers", "import transformers; print(f'  Transformers {transformers.__version__}')"),
-        ("PaddleOCR", "import paddleocr; print(f'  PaddleOCR {paddleocr.__version__}')"),
-        ("Ultralytics", "import ultralytics; print(f'  Ultralytics {ultralytics.__version__}')"),
-        ("Qwen VL Utils", "import qwen_vl_utils; print('  qwen-vl-utils OK')"),
-    ]
-
+def step_verify(log: InstallLogger):
+    """Verify all core packages are importable."""
     all_ok = True
-    for name, cmd in checks:
-        result = subprocess.run(f'python -c "{cmd}"', shell=True, capture_output=True, text=True)
+
+    for name, cmd in VERIFY_IMPORTS:
+        result = subprocess.run(
+            f'python -c "{cmd}"', shell=True, capture_output=True, text=True, timeout=30
+        )
         if result.returncode != 0:
-            print(f"  [WARN] {name}: not installed")
+            log.warn(f"{name}: not importable")
+            if result.stderr.strip():
+                last = result.stderr.strip().split("\n")[-1]
+                log.info(f"  Reason: {last[:200]}")
             all_ok = False
         else:
-            print(result.stdout.strip())
+            log.ok(result.stdout.strip())
 
-    # Optional: flash_attn
+    # Flash attention (optional)
     result = subprocess.run(
-        'python -c "import flash_attn; print(f\'  Flash Attention {flash_attn.__version__}\')"',
-        shell=True, capture_output=True, text=True,
+        'python -c "import flash_attn; print(f\'Flash Attention {flash_attn.__version__}\')"',
+        shell=True, capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
-        print(result.stdout.strip())
+        log.ok(result.stdout.strip())
     else:
-        print("  Flash Attention: not installed (optional, SDPA used instead)")
+        log.info("Flash Attention: not installed (optional, SDPA used instead)")
 
-    if all_ok:
-        print("\n[OK] All core packages verified.")
-    else:
-        print("\n[WARN] Some packages missing. Server may still work.")
+    return all_ok
 
-    return 0
+
+# ==========================================================================
+#  Main
+# ==========================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="OmniParser + Qwen OCR Installer")
+    parser.add_argument("--silent", action="store_true", help="Non-interactive mode")
+    parser.add_argument("--log-dir", type=str, default=None, help="Custom log directory")
+    parser.add_argument("--skip-hf-cache", action="store_true", help="Skip HuggingFace model caching")
+    parser.add_argument("--skip-flash-attn", action="store_true", help="Skip Flash Attention")
+    args = parser.parse_args()
+
+    log_dir = Path(args.log_dir) if args.log_dir else None
+    log = InstallLogger(log_dir)
+
+    log.info(f"Python: {sys.version}")
+    log.info(f"Install dir: {SCRIPT_DIR}")
+    log.info(f"Platform: {sys.platform}")
+    log._write("INFO", f"Arguments: {vars(args)}")
+
+    steps = [
+        ("Upgrade pip",              step_pip_upgrade),
+        ("Install PyTorch + CUDA",   step_pytorch),
+        ("Install requirements",     step_requirements),
+        ("Install Qwen OCR extras",  step_qwen_requirements),
+        ("Download model weights",   step_weights),
+        ("Install Flash Attention",  step_flash_attention),
+        ("Cache HuggingFace models", step_hf_cache),
+        ("Verify installation",      step_verify),
+    ]
+
+    # Filter optional steps
+    if args.skip_flash_attn:
+        steps = [(t, f) for t, f in steps if "Flash" not in t]
+    if args.skip_hf_cache:
+        steps = [(t, f) for t, f in steps if "HuggingFace" not in t]
+
+    total = len(steps)
+    t_start = time.time()
+
+    for i, (title, func) in enumerate(steps):
+        log.step_start(i + 1, total, title)
+        try:
+            success = func(log)
+            if success:
+                log.step_pass()
+            else:
+                log.step_fail()
+        except Exception as e:
+            log.error_trace(f"Unexpected error in step '{title}'", exc=e)
+            log.step_fail()
+
+    elapsed = time.time() - t_start
+    log.info(f"\nTotal time: {elapsed:.0f}s ({elapsed/60:.1f}min)")
+    log.print_summary()
+    log.close()
+
+    return 1 if log.fail_count > 0 else 0
 
 
 if __name__ == "__main__":
