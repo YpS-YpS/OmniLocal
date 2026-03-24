@@ -1,0 +1,50 @@
+version: '3.8'
+
+# vLLM server for maximum-speed Qwen2.5-VL-3B OCR
+# Launch with: docker compose -f docker-compose.vllm.yml up -d
+# Your Windows OmniParser app hits http://localhost:8100/v1/chat/completions
+#
+# GPU assignment: vLLM uses GPU 0 (RTX 4090) exclusively
+# OmniParser uses GPU 1 (RTX 4080) for YOLO + Florence2
+
+services:
+  vllm-qwen-ocr:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-qwen-ocr
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # RTX 4090
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    command: >
+      --model Qwen/Qwen2.5-VL-3B-Instruct
+      --host 0.0.0.0
+      --port 8000
+      --dtype float16
+      --max-model-len 2048
+      --gpu-memory-utilization 0.92
+      --enable-prefix-caching
+      --max-num-seqs 64
+      --max-num-batched-tokens 4096
+      --mm-processor-kwargs '{"min_pixels": 784, "max_pixels": 12544}'
+      --limit-mm-per-prompt image=1
+      --enforce-eager false
+      -O2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  vllm-cache:

@@ -382,23 +382,20 @@ def predict(model, image, caption, box_threshold, text_threshold):
     return boxes, logits, phrases
 
 
-def predict_yolo(model, image, box_threshold, imgsz, scale_img, iou_threshold=0.7):
+def predict_yolo(model, image, box_threshold, imgsz, scale_img, iou_threshold=0.7, device=None):
     """ Use huggingface model to replace the original model
     """
     # model = model['model']
-    if scale_img:
-        result = model.predict(
+    predict_kwargs = dict(
         source=image,
         conf=box_threshold,
-        imgsz=imgsz,
-        iou=iou_threshold, # default 0.7
-        )
-    else:
-        result = model.predict(
-        source=image,
-        conf=box_threshold,
-        iou=iou_threshold, # default 0.7
-        )
+        iou=iou_threshold,
+    )
+    if scale_img and imgsz:
+        predict_kwargs['imgsz'] = imgsz
+    if device:
+        predict_kwargs['device'] = device
+    result = model.predict(**predict_kwargs)
     boxes = result[0].boxes.xyxy#.tolist() # in pixel space
     conf = result[0].boxes.conf
     phrases = [str(i) for i in range(len(boxes))]
@@ -411,11 +408,13 @@ def int_box_area(box, w, h):
     area = (int_box[2] - int_box[0]) * (int_box[3] - int_box[1])
     return area
 
-def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_TRESHOLD=0.05, output_coord_in_ratio=False, ocr_bbox=None, text_scale=0.4, text_padding=5, draw_bbox_config=None, caption_model_processor=None, ocr_text=[], use_local_semantics=True, iou_threshold=0.01,prompt=None, scale_img=False, imgsz=None, batch_size=128):
+def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_TRESHOLD=0.05, output_coord_in_ratio=False, ocr_bbox=None, text_scale=0.4, text_padding=5, draw_bbox_config=None, caption_model_processor=None, ocr_text=[], use_local_semantics=True, iou_threshold=0.01,prompt=None, scale_img=False, imgsz=None, batch_size=128, precomputed_yolo=None, yolo_device=None):
     """Process either an image path or Image object
-    
+
     Args:
         image_source: Either a file path (str) or PIL Image object
+        precomputed_yolo: Optional tuple of (xyxy, logits, phrases) from parallel YOLO run
+        yolo_device: Device to run YOLO on (e.g. 'cuda:1')
         ...
     """
     if isinstance(image_source, str):
@@ -424,8 +423,11 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
     w, h = image_source.size
     if not imgsz:
         imgsz = (h, w)
-    # print('image size:', w, h)
-    xyxy, logits, phrases = predict_yolo(model=model, image=image_source, box_threshold=BOX_TRESHOLD, imgsz=imgsz, scale_img=scale_img, iou_threshold=0.1)
+    # Use precomputed YOLO results if available (from parallel execution)
+    if precomputed_yolo is not None:
+        xyxy, logits, phrases = precomputed_yolo
+    else:
+        xyxy, logits, phrases = predict_yolo(model=model, image=image_source, box_threshold=BOX_TRESHOLD, imgsz=imgsz, scale_img=scale_img, iou_threshold=0.1, device=yolo_device)
     xyxy = xyxy / torch.Tensor([w, h, w, h]).to(xyxy.device)
     image_source = np.asarray(image_source)
     phrases = [str(i) for i in range(len(phrases))]

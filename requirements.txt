@@ -23,6 +23,7 @@ opencv-python-headless>=4.6.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 gradio>=5.0.0
+aiohttp>=3.9.0
 
 # === Utilities ===
 numpy>=1.24.0,<2.0
