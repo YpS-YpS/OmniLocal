@@ -1,12 +1,11 @@
 import torch
-import hashlib
 import io
 import base64
 import asyncio
 import time
 import numpy as np
 from PIL import Image
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict
 from collections import OrderedDict
 
 
@@ -180,21 +179,41 @@ class QwenOCR:
 
     @staticmethod
     def _prepare_crop(crop: Image.Image) -> Image.Image:
-        """Prepare a crop for inference with minimum dimension enforcement.
+        """Prepare a crop for inference with minimum dimension and aspect ratio enforcement.
 
-        Ensures crop is at least 28x28 pixels to avoid processor resize-to-zero errors.
+        - Minimum 56px per dimension (2x safety margin for processor resize)
+        - Maximum 14:1 aspect ratio (processor resize-to-zero at ~16:1 with max_pixels=12544)
         """
         if crop.width < 2 or crop.height < 2:
             return None
 
         crop_rgb = crop.convert("RGB")
-        # Qwen2.5-VL processor requires minimum 28px per dimension
-        # and the image must be large enough to not resize to 0px
-        MIN_DIM = 56  # Use 56 (2x safety margin) to avoid edge cases in processor resize
-        if crop_rgb.width < MIN_DIM or crop_rgb.height < MIN_DIM:
-            scale = max(MIN_DIM / crop_rgb.width, MIN_DIM / crop_rgb.height, 1.0)
-            new_w = max(int(crop_rgb.width * scale), MIN_DIM)
-            new_h = max(int(crop_rgb.height * scale), MIN_DIM)
+
+        # Cap extreme aspect ratios: the Qwen processor rounds dimensions to multiples
+        # of 28 after scaling to fit pixel budget. At ~16:1 ratio the short dimension
+        # rounds to 0. We cap at 14:1 with padding.
+        MAX_RATIO = 14.0
+        w, h = crop_rgb.width, crop_rgb.height
+        ratio = max(w, h) / max(min(w, h), 1)
+        if ratio > MAX_RATIO:
+            if w > h:
+                new_h = max(int(w / MAX_RATIO), 56)
+                padded = Image.new("RGB", (w, new_h), (0, 0, 0))
+                padded.paste(crop_rgb, (0, (new_h - h) // 2))
+                crop_rgb = padded
+            else:
+                new_w = max(int(h / MAX_RATIO), 56)
+                padded = Image.new("RGB", (new_w, h), (0, 0, 0))
+                padded.paste(crop_rgb, ((new_w - w) // 2, 0))
+                crop_rgb = padded
+
+        # Enforce minimum dimensions
+        MIN_DIM = 56
+        w, h = crop_rgb.width, crop_rgb.height
+        if w < MIN_DIM or h < MIN_DIM:
+            scale = max(MIN_DIM / w, MIN_DIM / h, 1.0)
+            new_w = max(int(w * scale), MIN_DIM)
+            new_h = max(int(h * scale), MIN_DIM)
             crop_rgb = crop_rgb.resize((new_w, new_h), Image.LANCZOS)
 
         return crop_rgb
@@ -242,6 +261,7 @@ class QwenOCR:
 
         return result
 
+    @torch.inference_mode()
     def _local_recognize_single(self, crop_rgb: Image.Image) -> str:
         """Local HF inference for a single crop."""
         inputs = self.processor(
