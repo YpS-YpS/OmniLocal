@@ -109,11 +109,15 @@ class Omniparser(object):
     def _run_ocr(self, image, text_threshold, use_paddleocr, qwen_ocr_instance):
         """Run OCR (PaddleOCR detection + Qwen recognition) on the OCR GPU. Called from thread."""
         t0 = time.perf_counter()
-        (text, ocr_bbox), _ = check_ocr_box(
-            image, display_img=False, output_bb_format='xyxy',
-            easyocr_args={'text_threshold': text_threshold},
-            use_paddleocr=use_paddleocr, qwen_ocr=qwen_ocr_instance
-        )
+        try:
+            (text, ocr_bbox), _ = check_ocr_box(
+                image, display_img=False, output_bb_format='xyxy',
+                easyocr_args={'text_threshold': text_threshold},
+                use_paddleocr=use_paddleocr, qwen_ocr=qwen_ocr_instance
+            )
+        except Exception as e:
+            print(f'[Omniparser] OCR failed on {self.gpu_ocr}: {e} — returning empty results')
+            return [], []
         t1 = time.perf_counter()
         print(f'[Omniparser] OCR on {self.gpu_ocr}: {t1-t0:.3f}s ({len(text)} texts)')
         return text, ocr_bbox

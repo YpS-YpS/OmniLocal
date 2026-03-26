@@ -449,8 +449,17 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
     filtered_boxes_elem = sorted(filtered_boxes, key=lambda x: x['content'] is None)
     # get the index of the first 'content': None
     starting_idx = next((i for i, box in enumerate(filtered_boxes_elem) if box['content'] is None), -1)
-    filtered_boxes = torch.tensor([box['bbox'] for box in filtered_boxes_elem])
+    filtered_boxes = torch.tensor([box['bbox'] for box in filtered_boxes_elem]) if filtered_boxes_elem else torch.empty(0, 4)
     print('len(filtered_boxes):', len(filtered_boxes), starting_idx)
+
+    # Early return on zero detections — black screens, loading screens, etc.
+    if len(filtered_boxes) == 0:
+        print('[Omniparser] No UI elements detected (black screen?) — returning original image')
+        pil_img = Image.fromarray(image_source)
+        buffered = io.BytesIO()
+        pil_img.save(buffered, format="PNG")
+        encoded_image = base64.b64encode(buffered.getvalue()).decode('ascii')
+        return encoded_image, {}, []
 
     # get parsed icon local semantics
     time1 = time.time()
@@ -474,15 +483,6 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
         ocr_text = [f"Text Box ID {i}: {txt}" for i, txt in enumerate(ocr_text)]
         parsed_content_merged = ocr_text
     print('time to get parsed content:', time.time()-time1)
-
-    # Handle empty detection results gracefully
-    if len(filtered_boxes) == 0:
-        print('No UI elements detected - returning original image with empty results')
-        pil_img = Image.fromarray(image_source)
-        buffered = io.BytesIO()
-        pil_img.save(buffered, format="PNG")
-        encoded_image = base64.b64encode(buffered.getvalue()).decode('ascii')
-        return encoded_image, {}, []
 
     filtered_boxes = box_convert(boxes=filtered_boxes, in_fmt="xyxy", out_fmt="cxcywh")
 
