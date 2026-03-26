@@ -83,9 +83,20 @@ class Omniparser(object):
         # Thread pool for parallel GPU execution
         self._executor = ThreadPoolExecutor(max_workers=4)
 
-        print(f'[Omniparser] Initialized! Speed mode: hash_cache={config.get("use_hash_cache", True)}, '
-              f'vllm={"YES" if config.get("vllm_url") else "NO"}, '
-              f'dual_gpu={self.dual_gpu}')
+        # Determine active OCR engine
+        if self.qwen_ocr is not None:
+            ocr_engine = 'Qwen2.5-VL-3B (DE2)'
+        elif config.get('use_paddleocr', False):
+            ocr_engine = 'PaddleOCR (legacy)'
+        else:
+            ocr_engine = 'EasyOCR (legacy)'
+
+        print(f'[Omniparser] ╔══════════════════════════════════════════════╗')
+        print(f'[Omniparser] ║  OCR Engine: {ocr_engine:<32s}║')
+        print(f'[Omniparser] ║  Dual GPU:   {"YES" if self.dual_gpu else "NO":<32s}║')
+        print(f'[Omniparser] ║  Hash Cache: {"YES" if config.get("use_hash_cache", True) else "NO":<32s}║')
+        print(f'[Omniparser] ║  vLLM:       {"YES" if config.get("vllm_url") else "NO":<32s}║')
+        print(f'[Omniparser] ╚══════════════════════════════════════════════╝')
 
     def _run_yolo(self, image, box_threshold, scale_img, imgsz):
         """Run YOLO detection on the detection GPU. Called from thread."""
