@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 chcp 65001 >nul 2>nul
 
 echo ============================================
-echo   OmniParser + Qwen OCR Speed Pipeline
+echo   Dinosaur Eyes 2
 echo   Installer
 echo ============================================
 echo.
@@ -60,7 +60,7 @@ if %PY_MAJOR% GTR 3 goto :bad_version
 if %PY_MINOR% LSS 10 goto :bad_version
 if %PY_MINOR% GTR 12 goto :bad_version
 echo [OK] Python %PYTHON_VER% is supported.
-goto :create_venv
+goto :run_installer
 
 :bad_version
 echo.
@@ -70,36 +70,18 @@ echo         Download from: https://www.python.org/downloads/
 pause
 exit /b 1
 
-:: --- Step 2: Create virtual environment ---
-:create_venv
+:: --- Step 2: Set environment ---
+:run_installer
 echo.
-if exist "%~dp0venv\Scripts\activate.bat" (
-    echo [OK] Virtual environment already exists.
-) else (
-    echo Creating virtual environment...
-    %PYTHON_CMD% -m venv "%~dp0venv"
-    if errorlevel 1 (
-        echo [ERROR] Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
-)
-
-:: Activate venv
-call "%~dp0venv\Scripts\activate.bat"
-echo [OK] Virtual environment activated.
-
-:: --- Step 3: Set environment ---
 set HF_HOME=%~dp0.cache\huggingface
 set HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
-:: --- Step 4: Run installer ---
-echo.
+:: --- Step 3: Run installer ---
 echo Running installer (this may take 5-15 minutes on first run)...
 echo Installation log will be saved to logs\install_*.log
 echo.
 
-python "%~dp0install.py" %*
+%PYTHON_CMD% "%~dp0install.py" %*
 if errorlevel 1 (
     echo.
     echo [ERROR] Installation had failures. Check output above and log file.
@@ -117,7 +99,6 @@ echo To start the server:
 echo   start_omni_server.bat
 echo.
 echo To parse a single image:
-echo   venv\Scripts\activate.bat
 echo   python parse_image.py your_screenshot.png
 echo.
 pause

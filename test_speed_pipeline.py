@@ -60,7 +60,7 @@ def test_import_qwen_ocr():
     from util.qwen_ocr import QwenOCR
     assert QwenOCR is not None
 
-@test("Import Omniparser class (no init)")
+@test("Import DE2 Omniparser class (no init)")
 def test_import_omniparser():
     from util.omniparser import Omniparser
     assert Omniparser is not None

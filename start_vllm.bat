@@ -1,7 +1,7 @@
 @echo off
 REM Launch vLLM server for maximum-speed Qwen2.5-VL-3B OCR
 REM Requires: Docker Desktop with WSL2 backend + NVIDIA Container Toolkit
-REM GPU 0 (RTX 4090) runs vLLM, GPU 1 (RTX 4080) runs OmniParser detection
+REM GPU 0 (RTX 4090) runs vLLM, GPU 1 (RTX 4080) runs DE2 detection
 
 echo ============================================
 echo  vLLM OCR Server - Maximum Speed Mode
@@ -9,7 +9,7 @@ echo ============================================
 echo.
 echo GPU Assignment:
 echo   GPU 0 (RTX 4090) = vLLM Qwen2.5-VL-3B OCR engine
-echo   GPU 1 (RTX 4080) = OmniParser YOLO + Florence2
+echo   GPU 1 (RTX 4080) = DE2 YOLO + Florence2
 echo.
 echo Configuration:
 echo   - Prefix caching: ENABLED
@@ -57,7 +57,7 @@ echo ============================================
 echo  vLLM server is READY at http://localhost:8100
 echo ============================================
 echo.
-echo Now start OmniParser with vLLM mode:
+echo Now start Dinosaur Eyes 2 with vLLM mode:
 echo   start_omni_server.bat (select option 4: Maximum Speed)
 echo.
 echo Or manually:

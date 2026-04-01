@@ -1,4 +1,4 @@
-"""Parse an image with OmniParser + Qwen OCR and save a labeled visualization.
+"""Parse an image with Dinosaur Eyes 2 + Qwen OCR and save a labeled visualization.
 
 Usage:
     python parse_image.py <image_path> [--port 8099] [--no-qwen]
@@ -90,7 +90,7 @@ def parse_and_label(image_path, port=8099, use_qwen=True):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parse image with OmniParser + Qwen OCR")
+    parser = argparse.ArgumentParser(description="Parse image with Dinosaur Eyes 2 + Qwen OCR")
     parser.add_argument("image", help="Path to image file")
     parser.add_argument("--port", type=int, default=8099, help="Server port (default: 8099)")
     parser.add_argument("--no-qwen", action="store_true", help="Use PaddleOCR instead of Qwen")

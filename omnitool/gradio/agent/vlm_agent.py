@@ -39,15 +39,15 @@ class VLMAgent:
         only_n_most_recent_images: int | None = None,
         print_usage: bool = True,
     ):
-        if model == "omniparser + gpt-4o":
+        if model == "de2 + gpt-4o":
             self.model = "gpt-4o-2024-11-20"
-        elif model == "omniparser + R1":
+        elif model == "de2 + R1":
             self.model = "deepseek-r1-distill-llama-70b"
-        elif model == "omniparser + qwen2.5vl":
+        elif model == "de2 + qwen2.5vl":
             self.model = "qwen2.5-vl-72b-instruct"
-        elif model == "omniparser + o1":
+        elif model == "de2 + o1":
             self.model = "o1"
-        elif model == "omniparser + o3-mini":
+        elif model == "de2 + o3-mini":
             self.model = "o3-mini"
         else:
             raise ValueError(f"Model {model} not supported")
@@ -136,7 +136,7 @@ class VLMAgent:
         else:
             raise ValueError(f"Model {self.model} not supported")
         latency_vlm = time.time() - start
-        self.output_callback(f"LLM: {latency_vlm:.2f}s, OmniParser: {latency_omniparser:.2f}s", sender="bot")
+        self.output_callback(f"LLM: {latency_vlm:.2f}s, DE2: {latency_omniparser:.2f}s", sender="bot")
 
         print(f"{vlm_response}")
         
@@ -169,7 +169,7 @@ class VLMAgent:
         self.output_callback(f'<img src="data:image/png;base64,{img_to_show_base64}">', sender="bot")
         self.output_callback(
                     f'<details>'
-                    f'  <summary>Parsed Screen elemetns by OmniParser</summary>'
+                    f'  <summary>Parsed Screen elements by Dinosaur Eyes 2</summary>'
                     f'  <pre>{screen_info}</pre>'
                     f'</details>',
                     sender="bot"

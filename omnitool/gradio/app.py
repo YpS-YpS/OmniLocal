@@ -27,7 +27,7 @@ CONFIG_DIR = Path("~/.anthropic").expanduser()
 API_KEY_FILE = CONFIG_DIR / "api_key"
 
 INTRO_TEXT = '''
-OmniParser lets you turn any vision-langauge model into an AI agent. We currently support **OpenAI (4o/o1/o3-mini), DeepSeek (R1), Qwen (2.5VL) or Anthropic Computer Use (Sonnet).**
+Dinosaur Eyes 2 lets you turn any vision-language model into an AI agent. We currently support **OpenAI (4o/o1/o3-mini), DeepSeek (R1), Qwen (2.5VL) or Anthropic Computer Use (Sonnet).**
 
 Type a message and press submit to start OmniTool. Press stop to pause, and press the trash icon in the chat to clear the message history.
 '''
@@ -51,7 +51,7 @@ def setup_state(state):
     if "messages" not in state:
         state["messages"] = []
     if "model" not in state:
-        state["model"] = "omniparser + gpt-4o"
+        state["model"] = "de2 + gpt-4o"
     if "provider" not in state:
         state["provider"] = "openai"
     if "openai_api_key" not in state:  # Fetch API keys from environment variables
@@ -192,7 +192,7 @@ def valid_params(user_input, state):
     """Validate all requirements and return a list of error messages."""
     errors = []
     
-    for server_name, url in [('Windows Host', '192.168.50.231:5000'), ('OmniParser Server', args.omniparser_server_url)]:
+    for server_name, url in [('Windows Host', '192.168.50.231:5000'), ('DE2 Server', args.omniparser_server_url)]:
         try:
             url = f'http://{url}/probe'
             print(f"Testing connection to {server_name} at {url}")
@@ -219,7 +219,7 @@ def valid_params(user_input, state):
     """Validate all requirements and return a list of error messages."""
     errors = []
     
-    for server_name, url in [('Windows Host', '192.168.50.231:5000'), ('OmniParser Server', args.omniparser_server_url)]:
+    for server_name, url in [('Windows Host', '192.168.50.231:5000'), ('DE2 Server', args.omniparser_server_url)]:
         try:
             url = f'http://{url}/probe'
             response = requests.get(url, timeout=3)
@@ -331,8 +331,8 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             with gr.Column():
                 model = gr.Dropdown(
                     label="Model",
-                    choices=["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "claude-3-5-sonnet-20241022", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated"],
-                    value="omniparser + gpt-4o",
+                    choices=["de2 + gpt-4o", "de2 + o1", "de2 + o3-mini", "de2 + R1", "de2 + qwen2.5vl", "claude-3-5-sonnet-20241022", "de2 + gpt-4o-orchestrated", "de2 + o1-orchestrated", "de2 + o3-mini-orchestrated", "de2 + R1-orchestrated", "de2 + qwen2.5vl-orchestrated"],
+                    value="de2 + gpt-4o",
                     interactive=True,
                 )
             with gr.Column():
@@ -363,7 +363,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
 
     with gr.Row():
         with gr.Column(scale=8):
-            chat_input = gr.Textbox(show_label=False, placeholder="Type a message to send to Omniparser + X ...", container=False)
+            chat_input = gr.Textbox(show_label=False, placeholder="Type a message to send to DE2 + X ...", container=False)
         with gr.Column(scale=1, min_width=50):
             submit_button = gr.Button(value="Send", variant="primary")
         with gr.Column(scale=1, min_width=50):
@@ -385,11 +385,11 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
         
         if model_selection == "claude-3-5-sonnet-20241022":
             provider_choices = [option.value for option in APIProvider if option.value != "openai"]
-        elif model_selection in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated"]):
+        elif model_selection in set(["de2 + gpt-4o", "de2 + o1", "de2 + o3-mini", "de2 + gpt-4o-orchestrated", "de2 + o1-orchestrated", "de2 + o3-mini-orchestrated"]):
             provider_choices = ["openai"]
-        elif model_selection == "omniparser + R1":
+        elif model_selection == "de2 + R1":
             provider_choices = ["groq"]
-        elif model_selection == "omniparser + qwen2.5vl":
+        elif model_selection == "de2 + qwen2.5vl":
             provider_choices = ["dashscope"]
         else:
             provider_choices = [option.value for option in APIProvider]

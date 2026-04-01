@@ -28,14 +28,14 @@ class Omniparser(object):
                 mem_free, mem_total = torch.cuda.mem_get_info(i)
                 name = torch.cuda.get_device_name(i)
                 vram.append((mem_total, i, name))
-                print(f'[Omniparser] GPU {i}: {name}, {mem_total/1024**3:.1f}GB total')
+                print(f'[DE2] GPU {i}: {name}, {mem_total/1024**3:.1f}GB total')
             vram.sort(reverse=True)  # Biggest first
             big_gpu = f'cuda:{vram[0][1]}'
             small_gpu = f'cuda:{vram[1][1]}'
             self.gpu_ocr = big_gpu      # Qwen on the big GPU (needs 6GB+ model + KV cache)
             self.gpu_detect = small_gpu  # YOLO+Florence2 on smaller GPU (needs ~3GB)
             self.dual_gpu = True
-            print(f'[Omniparser] Auto-assigned: OCR -> {big_gpu} ({vram[0][2]}), '
+            print(f'[DE2] Auto-assigned: OCR -> {big_gpu} ({vram[0][2]}), '
                   f'Detection -> {small_gpu} ({vram[1][2]})')
         elif num_gpus >= 2:
             self.gpu_ocr = config.get('gpu_ocr', 'cuda:0')
@@ -45,9 +45,9 @@ class Omniparser(object):
             self.gpu_ocr = 'cuda:0' if num_gpus > 0 else 'cpu'
             self.gpu_detect = self.gpu_ocr
             if config.get('gpu_detect', 'cuda:0') != config.get('gpu_ocr', 'cuda:0'):
-                print(f'[Omniparser] Only {num_gpus} GPU(s), forcing single-GPU mode')
+                print(f'[DE2] Only {num_gpus} GPU(s), forcing single-GPU mode')
 
-        print(f'[Omniparser] Device config: ocr={self.gpu_ocr}, detection={self.gpu_detect}, dual={self.dual_gpu}')
+        print(f'[DE2] Device config: ocr={self.gpu_ocr}, detection={self.gpu_detect}, dual={self.dual_gpu}')
 
         # Load YOLO
         self.som_model = get_yolo_model(model_path=config['som_model_path'])
@@ -91,12 +91,12 @@ class Omniparser(object):
         else:
             ocr_engine = 'EasyOCR (legacy)'
 
-        print(f'[Omniparser] ╔══════════════════════════════════════════════╗')
-        print(f'[Omniparser] ║  OCR Engine: {ocr_engine:<32s}║')
-        print(f'[Omniparser] ║  Dual GPU:   {"YES" if self.dual_gpu else "NO":<32s}║')
-        print(f'[Omniparser] ║  Hash Cache: {"YES" if config.get("use_hash_cache", True) else "NO":<32s}║')
-        print(f'[Omniparser] ║  vLLM:       {"YES" if config.get("vllm_url") else "NO":<32s}║')
-        print(f'[Omniparser] ╚══════════════════════════════════════════════╝')
+        print(f'[DE2] ╔══════════════════════════════════════════════╗')
+        print(f'[DE2] ║  OCR Engine: {ocr_engine:<32s}║')
+        print(f'[DE2] ║  Dual GPU:   {"YES" if self.dual_gpu else "NO":<32s}║')
+        print(f'[DE2] ║  Hash Cache: {"YES" if config.get("use_hash_cache", True) else "NO":<32s}║')
+        print(f'[DE2] ║  vLLM:       {"YES" if config.get("vllm_url") else "NO":<32s}║')
+        print(f'[DE2] ╚══════════════════════════════════════════════╝')
 
     def _run_yolo(self, image, box_threshold, scale_img, imgsz):
         """Run YOLO detection on the detection GPU. Called from thread."""
@@ -114,7 +114,7 @@ class Omniparser(object):
             device=self.gpu_detect,
         )
         t1 = time.perf_counter()
-        print(f'[Omniparser] YOLO detection on {self.gpu_detect}: {t1-t0:.3f}s ({len(xyxy)} boxes)')
+        print(f'[DE2] YOLO detection on {self.gpu_detect}: {t1-t0:.3f}s ({len(xyxy)} boxes)')
         return xyxy, logits, phrases
 
     def _run_ocr(self, image, text_threshold, use_paddleocr, qwen_ocr_instance):
@@ -127,10 +127,10 @@ class Omniparser(object):
                 use_paddleocr=use_paddleocr, qwen_ocr=qwen_ocr_instance
             )
         except Exception as e:
-            print(f'[Omniparser] OCR failed on {self.gpu_ocr}: {e} — returning empty results')
+            print(f'[DE2] OCR failed on {self.gpu_ocr}: {e} — returning empty results')
             return [], []
         t1 = time.perf_counter()
-        print(f'[Omniparser] OCR on {self.gpu_ocr}: {t1-t0:.3f}s ({len(text)} texts)')
+        print(f'[DE2] OCR on {self.gpu_ocr}: {t1-t0:.3f}s ({len(text)} texts)')
         return text, ocr_bbox
 
     def parse(self, image_base64: str, override_config: dict = None):
@@ -212,7 +212,7 @@ class Omniparser(object):
         )
 
         t_end = time.perf_counter()
-        print(f'[Omniparser] Timing: parallel(YOLO+OCR)={t_parallel-t_start:.3f}s, '
+        print(f'[DE2] Timing: parallel(YOLO+OCR)={t_parallel-t_start:.3f}s, '
               f'merge+caption={t_end-t_parallel:.3f}s, total={t_end-t_start:.3f}s')
 
         return dino_labled_img, parsed_content_list

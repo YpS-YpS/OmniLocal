@@ -17,7 +17,7 @@ class OmniParserClient:
         image_base64 = encode_image(screenshot_path)
         response = requests.post(self.url, json={"base64_image": image_base64})
         response_json = response.json()
-        print('omniparser latency:', response_json['latency'])
+        print('DE2 latency:', response_json['latency'])
 
         som_image_data = base64.b64decode(response_json['som_image_base64'])
         screenshot_path_uuid = Path(screenshot_path).stem.replace("screenshot_", "")

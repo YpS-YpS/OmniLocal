@@ -1,2 +1,0 @@
-# Qwen2.5-VL OCR dependencies (installed automatically by install.py)
-qwen-vl-utils>=0.0.8

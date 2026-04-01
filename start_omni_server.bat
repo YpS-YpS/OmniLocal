@@ -1,5 +1,5 @@
 @echo off
-REM Start Omniparser Server — Maximum Speed Edition
+REM Dinosaur Eyes 2 Server — Maximum Speed Edition
 REM Supports: Standard mode, Qwen OCR, and MAXIMUM SPEED (vLLM + dual GPU)
 
 setlocal enabledelayedexpansion
@@ -7,20 +7,12 @@ setlocal enabledelayedexpansion
 REM Store the script directory
 set "SCRIPT_DIR=%~dp0"
 
-REM Activate virtual environment if present
-if exist "%SCRIPT_DIR%venv\Scripts\activate.bat" (
-    call "%SCRIPT_DIR%venv\Scripts\activate.bat"
-) else (
-    echo [WARN] No venv found. Run install.bat first.
-    echo        Continuing with system Python...
-)
-
 REM Set HuggingFace cache to project-local directory
 set HF_HOME=%SCRIPT_DIR%.cache\huggingface
 set HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
 REM Get number of instances from user
-set /p NUM_INSTANCES="Enter number of Omniparser instances to start (1-10) [default: 1]: "
+set /p NUM_INSTANCES="Enter number of Dinosaur Eyes 2 instances to start (1-10) [default: 1]:"
 if "%NUM_INSTANCES%"=="" set NUM_INSTANCES=1
 if %NUM_INSTANCES% LSS 1 set NUM_INSTANCES=1
 if %NUM_INSTANCES% GTR 10 set NUM_INSTANCES=10
@@ -64,7 +56,7 @@ if "%OCR_CHOICE%"=="1" (
 )
 
 echo.
-echo Starting %NUM_INSTANCES% Omniparser instance(s) with %OCR_NAME%...
+echo Starting %NUM_INSTANCES% Dinosaur Eyes 2 instance(s) with %OCR_NAME%...
 echo.
 
 REM Check if Windows Terminal is available
@@ -73,7 +65,7 @@ if %errorlevel% neq 0 (
     echo Windows Terminal not found. Falling back to separate windows...
     for /L %%i in (1,1,%NUM_INSTANCES%) do (
         set /a PORT=8000+%%i-1
-        start "Omniparser !PORT!" cmd /k "cd /d !SCRIPT_DIR!omnitool\omniparserserver && python -m omniparserserver !OCR_FLAG! --port !PORT!"
+        start "DinoEyes2 !PORT!" cmd /k "cd /d !SCRIPT_DIR!omnitool\omniparserserver && python -m omniparserserver !OCR_FLAG! --port !PORT!"
     )
     goto :end
 )
@@ -85,34 +77,34 @@ echo Ports: 8000 to %LAST_PORT%
 echo.
 
 if %NUM_INSTANCES%==1 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000"
+    wt -w 0 nt --title "DinoEyes2 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000"
     goto :end
 )
 
 if %NUM_INSTANCES%==2 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001"
+    wt -w 0 nt --title "DinoEyes2 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "DinoEyes2 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001"
     goto :end
 )
 
 if %NUM_INSTANCES%==3 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "Omniparser 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002"
+    wt -w 0 nt --title "DinoEyes2 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "DinoEyes2 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "DinoEyes2 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002"
     goto :end
 )
 
 if %NUM_INSTANCES%==4 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "Omniparser 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "Omniparser 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003"
+    wt -w 0 nt --title "DinoEyes2 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "DinoEyes2 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "DinoEyes2 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "DinoEyes2 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003"
     goto :end
 )
 
 if %NUM_INSTANCES% GEQ 5 (
-    wt -w 0 nt --title "Omniparser 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "Omniparser 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "Omniparser 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "Omniparser 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003" ; nt --title "Omniparser 8004 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8004"
+    wt -w 0 nt --title "DinoEyes2 8000 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8000" ; nt --title "DinoEyes2 8001 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8001" ; nt --title "DinoEyes2 8002 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8002" ; nt --title "DinoEyes2 8003 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8003" ; nt --title "DinoEyes2 8004 [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port 8004"
 
     REM Launch remaining instances (6-10) in additional tabs
     if %NUM_INSTANCES% GEQ 6 (
         for /L %%i in (6,1,%NUM_INSTANCES%) do (
             set /a PORT=8000+%%i-1
             timeout /t 1 /nobreak >nul
-            wt -w 0 nt --title "Omniparser !PORT! [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port !PORT!"
+            wt -w 0 nt --title "DinoEyes2 !PORT! [%OCR_NAME%]" cmd /k "cd /d %SCRIPT_DIR%omnitool\omniparserserver && python -m omniparserserver %OCR_FLAG% --port !PORT!"
         )
     )
     goto :end

@@ -1,7 +1,8 @@
-"""OmniParser + Qwen OCR Speed Pipeline Installer.
+"""Dinosaur Eyes 2 Installer.
 
 Handles: Python validation, pip packages, CUDA detection, weights download,
-flash attention, HuggingFace model caching. Generates installation log.
+flash attention (from local .whl), HuggingFace model caching.
+Generates installation log.
 
 Standalone: install.bat -> install.py
 RPX plugin: rpx_setup executor -> python install.py [--silent] [--log-dir <path>]
@@ -26,11 +27,6 @@ GDRIVE_FILES = {
         "id": "1Otyc6swsZkzNyDHdPvPIXbyCky6QhNkg",
         "dest": SCRIPT_DIR / "weights.zip",
         "desc": "Model weights (YOLO + Florence2, ~1.1 GB)",
-    },
-    "flash_attn": {
-        "id": "1YwujFpvm-h8uNnM-MexEd4zvDqvR3-Gn",
-        "dest": SCRIPT_DIR / "flash_attn.whl",
-        "desc": "Flash Attention wheel (~128 MB)",
     },
 }
 
@@ -254,18 +250,6 @@ def step_requirements(log: InstallLogger):
     return run_cmd(f'pip install -r "{req_file}"', log, "Installing requirements.txt", timeout=600)
 
 
-def step_qwen_requirements(log: InstallLogger):
-    """Install Qwen OCR extra requirements if file exists."""
-    qwen_req = SCRIPT_DIR / "requirements-qwen-ocr.txt"
-    if not qwen_req.exists():
-        log.info("No requirements-qwen-ocr.txt found, skipping")
-        return True
-    if qwen_req.stat().st_size < 5:
-        log.info("requirements-qwen-ocr.txt is empty, skipping")
-        return True
-    return run_cmd(f'pip install -r "{qwen_req}"', log, "Installing Qwen OCR requirements", timeout=600)
-
-
 def step_weights(log: InstallLogger):
     """Download and extract model weights (YOLO + Florence2)."""
     weights_dir = SCRIPT_DIR / "weights"
@@ -304,7 +288,11 @@ def step_weights(log: InstallLogger):
 
 
 def step_flash_attention(log: InstallLogger):
-    """Download and install Flash Attention wheel (optional)."""
+    """Install Flash Attention from local .whl file (optional).
+
+    The wheel is downloaded by rpx_setup (setup.py) before this runs.
+    If no wheel is found locally, skip gracefully — SDPA is used instead.
+    """
     # Check if already installed
     result = subprocess.run(
         'python -c "import flash_attn; print(flash_attn.__version__)"',
@@ -314,18 +302,16 @@ def step_flash_attention(log: InstallLogger):
         log.ok(f"Flash Attention {result.stdout.strip()} already installed")
         return True
 
-    finfo = GDRIVE_FILES["flash_attn"]
-
-    # Check for existing .whl files in directory
+    # Look for existing .whl files in project directory
     existing_wheels = list(SCRIPT_DIR.glob("flash_attn*.whl"))
-    if existing_wheels:
-        wheel_path = existing_wheels[0]
-        log.info(f"Found existing wheel: {wheel_path.name}")
-    else:
-        if not gdrive_download(finfo["id"], finfo["dest"], finfo["desc"], log):
-            log.warn("Flash Attention download failed (optional -- SDPA will be used instead)")
-            return True  # Not a hard failure
-        wheel_path = finfo["dest"]
+    if not existing_wheels:
+        log.warn("No flash_attn .whl found in project directory (optional -- SDPA will be used instead)")
+        log.info("  The wheel should be downloaded by rpx_setup (setup.py).")
+        log.info("  You can also place a flash_attn*.whl file here manually.")
+        return True  # Not a hard failure
+
+    wheel_path = existing_wheels[0]
+    log.info(f"Found wheel: {wheel_path.name}")
 
     if run_cmd(f'pip install "{wheel_path}"', log, "Installing Flash Attention wheel", timeout=300):
         log.ok("Flash Attention installed")
@@ -333,7 +319,6 @@ def step_flash_attention(log: InstallLogger):
     else:
         log.warn("Flash Attention install failed (optional -- SDPA will be used instead)")
         log.info("  This is normal if your CUDA version doesn't match the wheel.")
-        log.info("  The server will use PyTorch's SDPA (Scaled Dot Product Attention) instead.")
         return True  # Not a hard failure
 
 
@@ -413,7 +398,7 @@ def step_verify(log: InstallLogger):
 # ==========================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="OmniParser + Qwen OCR Installer")
+    parser = argparse.ArgumentParser(description="Dinosaur Eyes 2 Installer")
     parser.add_argument("--silent", action="store_true", help="Non-interactive mode")
     parser.add_argument("--log-dir", type=str, default=None, help="Custom log directory")
     parser.add_argument("--skip-hf-cache", action="store_true", help="Skip HuggingFace model caching")
@@ -432,7 +417,6 @@ def main():
         ("Upgrade pip",              step_pip_upgrade),
         ("Install PyTorch + CUDA",   step_pytorch),
         ("Install requirements",     step_requirements),
-        ("Install Qwen OCR extras",  step_qwen_requirements),
         ("Download model weights",   step_weights),
         ("Install Flash Attention",  step_flash_attention),
         ("Cache HuggingFace models", step_hf_cache),

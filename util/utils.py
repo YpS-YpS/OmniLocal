@@ -454,7 +454,7 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
 
     # Early return on zero detections — black screens, loading screens, etc.
     if len(filtered_boxes) == 0:
-        print('[Omniparser] No UI elements detected (black screen?) — returning original image')
+        print('[DE2] No UI elements detected (black screen?) — returning original image')
         pil_img = Image.fromarray(image_source)
         buffered = io.BytesIO()
         pil_img.save(buffered, format="PNG")

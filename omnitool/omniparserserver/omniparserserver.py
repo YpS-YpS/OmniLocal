@@ -24,7 +24,7 @@ sys.path.append(root_dir)
 from util.omniparser import Omniparser
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Omniparser API - Maximum Speed Edition')
+    parser = argparse.ArgumentParser(description='Dinosaur Eyes 2 API - Maximum Speed Edition')
 
     # Model paths
     parser.add_argument('--som_model_path', type=str, default='../../weights/icon_detect/model.pt')
@@ -113,7 +113,7 @@ async def parse(parse_request: ParseRequest):
 
 @app.get("/probe/")
 async def root():
-    return {"message": "Omniparser API ready"}
+    return {"message": "Dinosaur Eyes 2 API ready"}
 
 @app.get("/cache_stats/")
 async def cache_stats():
