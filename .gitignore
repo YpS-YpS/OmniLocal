@@ -11,6 +11,7 @@ dist/
 
 # Weights (downloaded during install)
 weights/icon_detect/model.pt
+weights/
 weights/icon_caption_florence/model.safetensors
 weights/icon_caption_florence/config_native.json
 
