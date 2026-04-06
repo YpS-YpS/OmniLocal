@@ -1,14 +1,14 @@
 '''
 python -m omniparserserver --som_model_path ../../weights/icon_detect/model.pt --caption_model_name florence2 --caption_model_path ../../weights/icon_caption_florence --device cuda --BOX_TRESHOLD 0.05 --IOU_THRESHOLD 0.1 --use_paddleocr
 
-# Maximum Speed Mode (vLLM + dual GPU):
-# python -m omniparserserver --use_qwen_ocr --vllm_url http://localhost:8100 --gpu_detect cuda:1 --port 8000
+# Maximum Speed Mode (vLLM + dual GPU, auto-detects GPU assignment):
+# python -m omniparserserver --use_qwen_ocr --vllm_url http://localhost:8100 --port 8000
 
-# Maximum Speed Mode (local HF batched + dual GPU):
-# python -m omniparserserver --use_qwen_ocr --gpu_detect cuda:1 --ocr_batch_size 8 --port 8000
+# Maximum Speed Mode (local HF batched + dual GPU, auto-detects GPU assignment):
+# python -m omniparserserver --use_qwen_ocr --ocr_batch_size 8 --port 8000
 
-# Single GPU speed mode:
-# python -m omniparserserver --use_qwen_ocr --use_hash_cache --ocr_batch_size 8 --port 8000
+# Single GPU speed mode (force single GPU even with multiple GPUs):
+# python -m omniparserserver --use_qwen_ocr --use_hash_cache --ocr_batch_size 8 --no-dual-gpu --port 8000
 '''
 
 import sys
@@ -34,8 +34,9 @@ def parse_arguments():
 
     # Device configuration
     parser.add_argument('--device', type=str, default='cuda', help='Default device')
-    parser.add_argument('--gpu_ocr', type=str, default='cuda:0', help='GPU for Qwen OCR (RTX 4090)')
-    parser.add_argument('--gpu_detect', type=str, default='cuda:0', help='GPU for YOLO + Florence2 (RTX 4080)')
+    parser.add_argument('--gpu_ocr', type=str, default=None, help='GPU for Qwen OCR (auto-detects biggest GPU if not set)')
+    parser.add_argument('--gpu_detect', type=str, default=None, help='GPU for YOLO + Florence2 (auto-detects smallest GPU if not set)')
+    parser.add_argument('--no-dual-gpu', action='store_true', help='Force single-GPU mode even with multiple GPUs')
 
     # Detection thresholds
     parser.add_argument('--BOX_TRESHOLD', type=float, default=0.05)

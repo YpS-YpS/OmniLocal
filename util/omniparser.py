@@ -16,12 +16,22 @@ class Omniparser(object):
         # Dual-GPU support: Qwen OCR on the bigger GPU, YOLO+Florence2 on the smaller
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         self.dual_gpu = False
+        no_dual_gpu = config.get('no_dual_gpu', False)
 
-        # Check if user explicitly set GPU assignments
-        user_set_ocr = 'gpu_ocr' in config and config['gpu_ocr'] != 'cuda:0'
-        user_set_detect = 'gpu_detect' in config and config['gpu_detect'] != 'cuda:0'
+        # None = not set by user (argparse default), explicit 'cuda:X' = user override
+        user_set_ocr = config.get('gpu_ocr') is not None
+        user_set_detect = config.get('gpu_detect') is not None
 
-        if num_gpus >= 2 and not user_set_ocr and not user_set_detect:
+        if no_dual_gpu or num_gpus < 2:
+            # Single-GPU mode: forced by --no-dual-gpu or only 0-1 GPUs
+            default_dev = 'cuda:0' if num_gpus > 0 else 'cpu'
+            self.gpu_ocr = config['gpu_ocr'] if user_set_ocr else default_dev
+            self.gpu_detect = config['gpu_detect'] if user_set_detect else default_dev
+            if no_dual_gpu and num_gpus >= 2:
+                print(f'[DE2] Dual-GPU disabled by --no-dual-gpu, all models on {self.gpu_ocr}')
+            elif num_gpus < 2 and (user_set_ocr or user_set_detect):
+                print(f'[DE2] Only {num_gpus} GPU(s), forcing single-GPU mode')
+        elif not user_set_ocr and not user_set_detect:
             # Auto-detect: put Qwen (heavy) on the GPU with more VRAM
             vram = []
             for i in range(num_gpus):
@@ -37,20 +47,29 @@ class Omniparser(object):
             self.dual_gpu = True
             print(f'[DE2] Auto-assigned: OCR -> {big_gpu} ({vram[0][2]}), '
                   f'Detection -> {small_gpu} ({vram[1][2]})')
-        elif num_gpus >= 2:
-            self.gpu_ocr = config.get('gpu_ocr', 'cuda:0')
-            self.gpu_detect = config.get('gpu_detect', 'cuda:1')
-            self.dual_gpu = self.gpu_ocr != self.gpu_detect
         else:
-            self.gpu_ocr = 'cuda:0' if num_gpus > 0 else 'cpu'
-            self.gpu_detect = self.gpu_ocr
-            if config.get('gpu_detect', 'cuda:0') != config.get('gpu_ocr', 'cuda:0'):
-                print(f'[DE2] Only {num_gpus} GPU(s), forcing single-GPU mode')
+            # Explicit GPU assignment from user
+            self.gpu_ocr = config['gpu_ocr'] if user_set_ocr else 'cuda:0'
+            self.gpu_detect = config['gpu_detect'] if user_set_detect else 'cuda:0'
+            self.dual_gpu = self.gpu_ocr != self.gpu_detect
+            # Validate: warn if Qwen is on the smaller GPU
+            if self.dual_gpu:
+                try:
+                    ocr_idx = int(self.gpu_ocr.split(':')[1])
+                    det_idx = int(self.gpu_detect.split(':')[1])
+                    ocr_vram = torch.cuda.mem_get_info(ocr_idx)[1]
+                    det_vram = torch.cuda.mem_get_info(det_idx)[1]
+                    if det_vram > ocr_vram:
+                        print(f'[DE2] WARNING: Qwen OCR on {self.gpu_ocr} ({ocr_vram/1024**3:.1f}GB) '
+                              f'but {self.gpu_detect} has more VRAM ({det_vram/1024**3:.1f}GB). '
+                              f'Consider swapping --gpu_ocr and --gpu_detect.')
+                except (ValueError, IndexError):
+                    pass  # Non-standard device string, skip validation
 
         print(f'[DE2] Device config: ocr={self.gpu_ocr}, detection={self.gpu_detect}, dual={self.dual_gpu}')
 
-        # Load YOLO
-        self.som_model = get_yolo_model(model_path=config['som_model_path'])
+        # Load YOLO on detection GPU
+        self.som_model = get_yolo_model(model_path=config['som_model_path'], device=self.gpu_detect)
 
         # Load Florence2 on detection GPU
         caption_device = self.gpu_detect if self.gpu_detect != 'cpu' else self.device

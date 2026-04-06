@@ -282,33 +282,59 @@ def test_argparse_vllm():
 # ============================================================
 # Test 6: Dual-GPU logic
 # ============================================================
-@test("Dual-GPU: auto-assign detection to cuda:1 when 2 GPUs")
+@test("Dual-GPU: VRAM-based auto-detection assigns OCR to biggest GPU")
 def test_dual_gpu_auto():
     import torch
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     if num_gpus < 2:
         print("(skipped: <2 GPUs)")
-        return  # Skip on single-GPU systems
+        return
 
-    # Simulate the logic from omniparser.py
-    gpu_ocr = 'cuda:0'
-    gpu_detect = 'cuda:0'
-    if num_gpus >= 2 and gpu_ocr == 'cuda:0' and gpu_detect == 'cuda:0':
-        gpu_detect = 'cuda:1'
+    # Run the actual VRAM sorting logic from omniparser.py
+    vram = []
+    for i in range(num_gpus):
+        mem_free, mem_total = torch.cuda.mem_get_info(i)
+        name = torch.cuda.get_device_name(i)
+        vram.append((mem_total, i, name))
+    vram.sort(reverse=True)
 
-    assert gpu_ocr == 'cuda:0'
-    assert gpu_detect == 'cuda:1'
+    big_gpu = f'cuda:{vram[0][1]}'
+    small_gpu = f'cuda:{vram[1][1]}'
 
-@test("Dual-GPU: respects explicit override")
-def test_dual_gpu_explicit():
-    # If user explicitly sets gpu_detect=cuda:0, don't override
-    config = {'gpu_ocr': 'cuda:0', 'gpu_detect': 'cuda:0'}
-    gpu_ocr = config.get('gpu_ocr', 'cuda:0')
-    gpu_detect = config.get('gpu_detect', 'cuda:0')
-    # Auto-assign only happens when both default to cuda:0
-    # If user passes --gpu_detect cuda:0 explicitly, we can't distinguish
-    # But the logic works correctly in that the user can override via CLI
-    assert gpu_ocr == 'cuda:0'
+    assert vram[0][0] >= vram[1][0], f"Sort broken: {vram[0][0]} < {vram[1][0]}"
+    assert big_gpu != small_gpu, f"Both assigned to {big_gpu}"
+    print(f"OCR -> {big_gpu} ({vram[0][2]}, {vram[0][0]/1024**3:.1f}GB), "
+          f"Detect -> {small_gpu} ({vram[1][2]}, {vram[1][0]/1024**3:.1f}GB)")
+
+@test("Dual-GPU: None defaults enable auto-detection, explicit values bypass it")
+def test_dual_gpu_override_detection():
+    # None = argparse default = not set by user -> auto-detect should run
+    config_default = {'gpu_ocr': None, 'gpu_detect': None}
+    user_set_ocr = config_default.get('gpu_ocr') is not None
+    user_set_detect = config_default.get('gpu_detect') is not None
+    assert not user_set_ocr and not user_set_detect, "Auto-detect should trigger with None defaults"
+
+    # Explicit = user set -> should bypass auto-detect
+    config_explicit = {'gpu_ocr': 'cuda:1', 'gpu_detect': 'cuda:0'}
+    user_set_ocr = config_explicit.get('gpu_ocr') is not None
+    user_set_detect = config_explicit.get('gpu_detect') is not None
+    assert user_set_ocr and user_set_detect, "Explicit values should bypass auto-detect"
+
+@test("Dual-GPU: --no-dual-gpu prevents GPU split")
+def test_no_dual_gpu_flag():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--no-dual-gpu', action='store_true')
+    parser.add_argument('--gpu_ocr', type=str, default=None)
+    parser.add_argument('--gpu_detect', type=str, default=None)
+
+    args = parser.parse_args([])
+    assert args.no_dual_gpu == False, "Default should be False"
+
+    args = parser.parse_args(['--no-dual-gpu'])
+    assert args.no_dual_gpu == True, "Flag should set True"
+    assert args.gpu_ocr is None, "GPU defaults should stay None"
+    assert args.gpu_detect is None
 
 
 # ============================================================

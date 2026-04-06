@@ -39,19 +39,20 @@ if "%OCR_CHOICE%"=="1" (
     set "OCR_FLAG="
     set "OCR_NAME=EasyOCR"
 ) else if "%OCR_CHOICE%"=="3" (
-    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8"
+    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8 --no-dual-gpu"
     set "OCR_NAME=Qwen2.5-VL [Speed]"
 ) else if "%OCR_CHOICE%"=="4" (
-    set "OCR_FLAG=--use_qwen_ocr --vllm_url http://localhost:8100 --gpu_detect cuda:1 --use_hash_cache"
+    set "OCR_FLAG=--use_qwen_ocr --vllm_url http://localhost:8100 --use_hash_cache"
     set "OCR_NAME=MAX SPEED [vLLM]"
     echo.
     echo Make sure vLLM is running! Use start_vllm.bat first.
+    echo NOTE: vLLM GPU is pinned in docker-compose.vllm.yml - verify it matches your biggest GPU.
     echo.
 ) else if "%OCR_CHOICE%"=="5" (
-    set "OCR_FLAG=--use_qwen_ocr --gpu_detect cuda:1 --use_hash_cache --ocr_batch_size 8"
+    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8"
     set "OCR_NAME=MAX SPEED [Dual GPU]"
 ) else (
-    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8"
+    set "OCR_FLAG=--use_qwen_ocr --use_hash_cache --ocr_batch_size 8 --no-dual-gpu"
     set "OCR_NAME=Qwen2.5-VL [Speed]"
 )
 

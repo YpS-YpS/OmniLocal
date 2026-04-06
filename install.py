@@ -141,28 +141,23 @@ class InstallLogger:
 # ==========================================================================
 
 def run_cmd(cmd, log: InstallLogger, desc=None, check=True, timeout=600):
-    """Run a shell command with full output capture and logging."""
+    """Run a shell command with real-time output visible in terminal.
+
+    Output flows directly to stdout (no capture), so:
+    - When called from rpx_setup's run_live(): output streams through the pipe
+      to the terminal, preserving pip progress bars and colored output.
+    - When called standalone (python install.py): output goes directly to console.
+    """
     if desc:
         log.info(f"Running: {desc}")
     log._write("CMD", cmd)
 
     try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
-        )
-        if result.stdout.strip():
-            for line in result.stdout.strip().split("\n")[-20:]:
-                log._write("STDOUT", line)
-        if result.stderr.strip():
-            for line in result.stderr.strip().split("\n")[-10:]:
-                log._write("STDERR", line)
+        result = subprocess.run(cmd, shell=True, timeout=timeout)
+        log._write("EXIT", str(result.returncode))
 
         if check and result.returncode != 0:
             log.fail(f"Command failed (exit {result.returncode}): {cmd}")
-            if result.stderr.strip():
-                last_err = result.stderr.strip().split("\n")[-3:]
-                for line in last_err:
-                    log.info(f"  stderr: {line}")
             return False
         return True
     except subprocess.TimeoutExpired:
@@ -223,15 +218,16 @@ def step_pytorch(log: InstallLogger):
     log.info("PyTorch not found or CUDA not available, installing...")
 
     if run_cmd(
-        "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128",
-        log, "Installing PyTorch + CUDA 12.8", timeout=600
+        "pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cu128",
+        log, "Installing PyTorch 2.8.0 + CUDA 12.8", timeout=600
     ):
         return True
 
     log.warn("CUDA 12.8 failed, trying CUDA 12.4...")
+    log.warn("Flash Attention wheel requires CUDA 12.8 -- SDPA will be used instead with CUDA 12.4")
     if run_cmd(
-        "pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124",
-        log, "Installing PyTorch + CUDA 12.4 (fallback)", timeout=600
+        "pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cu124",
+        log, "Installing PyTorch 2.8.0 + CUDA 12.4 (fallback)", timeout=600
     ):
         return True
 
@@ -301,6 +297,13 @@ def step_flash_attention(log: InstallLogger):
     if result.returncode == 0:
         log.ok(f"Flash Attention {result.stdout.strip()} already installed")
         return True
+
+    # Check Python version -- the pre-built wheel is cp312 (Python 3.12) only
+    if sys.version_info[:2] != (3, 12):
+        log.warn(f"Flash Attention wheel requires Python 3.12 "
+                 f"(you have {sys.version_info.major}.{sys.version_info.minor})")
+        log.info("  SDPA will be used instead (no performance impact for inference)")
+        return True  # Not a hard failure
 
     # Look for existing .whl files in project directory
     existing_wheels = list(SCRIPT_DIR.glob("flash_attn*.whl"))
@@ -403,6 +406,7 @@ def main():
     parser.add_argument("--log-dir", type=str, default=None, help="Custom log directory")
     parser.add_argument("--skip-hf-cache", action="store_true", help="Skip HuggingFace model caching")
     parser.add_argument("--skip-flash-attn", action="store_true", help="Skip Flash Attention")
+    parser.add_argument("--skip-weights", action="store_true", help="Skip weights download (already handled by rpx_setup)")
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir) if args.log_dir else None
@@ -428,6 +432,8 @@ def main():
         steps = [(t, f) for t, f in steps if "Flash" not in t]
     if args.skip_hf_cache:
         steps = [(t, f) for t, f in steps if "HuggingFace" not in t]
+    if args.skip_weights:
+        steps = [(t, f) for t, f in steps if "weights" not in t.lower()]
 
     total = len(steps)
     t_start = time.time()
