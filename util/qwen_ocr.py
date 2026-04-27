@@ -16,7 +16,13 @@ class PerceptualHashCache:
     Cache hit = 0ms instead of ~20-100ms per crop.
     """
 
-    def __init__(self, max_size: int = 2048, hamming_threshold: int = 5):
+    def __init__(self, max_size: int = 2048, hamming_threshold: int = 0):
+        # Default 0 = exact dHash match only. Fuzzy matching with threshold>0 caused
+        # cross-image text bleed: a slider-thumb crop from frame N could match a
+        # different slider-thumb crop on frame N+1 within Hamming distance 5 and
+        # return the wrong cached label. Use explicit threshold>0 only when you
+        # know the cached *value* is invariant to small visual perturbations
+        # (NOT true for OCR text content).
         self.max_size = max_size
         self.hamming_threshold = hamming_threshold
         self._cache: OrderedDict[int, str] = OrderedDict()  # hash -> text
@@ -99,6 +105,13 @@ class QwenOCR:
         # Perceptual hash cache
         self.hash_cache = PerceptualHashCache() if use_hash_cache else None
 
+        # Lazy-loaded full-image processor for end-to-end OCR (Qwen detect+recognise).
+        # Distinct from self.processor (which is configured for tiny ≤12544-pixel
+        # crops); full-image OCR needs much higher max_pixels to keep small UI
+        # text legible. Loaded on first use to avoid extra startup cost when
+        # not needed.
+        self._fullimg_processor = None
+
         if vllm_url:
             # vLLM mode: no local model, just HTTP client
             print(f"[QwenOCR] vLLM mode: {vllm_url}")
@@ -111,6 +124,21 @@ class QwenOCR:
 
     def _load_local_model(self, model_path: str, device: str):
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+        # Optional: swap to the official AWQ-Int4 build for ~2x decode speedup.
+        # Set env QWEN_OCR_USE_AWQ=1 to enable. Visual encoder is NOT quantised
+        # (only the LM modules), so vision quality is unchanged. Halves VRAM.
+        # Requires autoawq 0.2.7.post1 (installed with --no-deps to bypass
+        # triton/triton-windows resolver conflict + transformers.qwen3 hard
+        # dep in 0.2.8+).
+        import os as _os
+        if _os.environ.get('QWEN_OCR_USE_AWQ', '').lower() in ('1', 'true', 'yes'):
+            awq_id = _os.environ.get(
+                'QWEN_OCR_AWQ_MODEL', 'Qwen/Qwen2.5-VL-3B-Instruct-AWQ',
+            )
+            print(f"[QwenOCR] AWQ mode: swapping {model_path} -> {awq_id}", flush=True)
+            model_path = awq_id
+            self.model_path = awq_id
 
         quant_label = f" [{self.quantize}]" if self.quantize else " [fp16]"
         print(f"[QwenOCR] Loading model from {model_path} on {device}{quant_label}...")
@@ -140,9 +168,39 @@ class QwenOCR:
                 model_path, quantization_config=bnb_config, device_map=device
             )
         else:
-            # FP16: best quality, ~6GB VRAM
+            # bf16 + backbone-specific attention (transformers 4.49+ supports
+            # passing a dict to attn_implementation). The Qwen2.5-VL ViT visual
+            # encoder uses a custom rotary kernel that imports triton from
+            # flash_attn — this works on Windows once triton-windows is
+            # installed. The LM decoder dominates runtime (2500-token
+            # generation on a dense screen), so flash_attention_2 there is
+            # the big win — ~2x decode throughput on RTX 4090.
+            #
+            # bf16 (vs fp16) costs nothing on Ada Lovelace tensor cores but
+            # avoids occasional NaN from long-context VLM dynamic range.
+            # fp16 + sdpa is the known-good config for this stack. Empirically:
+            #   - flash_attention_2 (with triton-windows installed) broke
+            #     determinism (text_drift=62 across 3 runs) AND made latency
+            #     WORSE for our use case (98s vs 60s with sdpa). The HF FA2
+            #     integration is documented as nondeterministic at the forward
+            #     pass; for OCR's 2500-token decode that compounds.
+            #   - bf16 helps numerical stability on long contexts but on our
+            #     RTX 4090 has no measured speed advantage and triggered a
+            #     CUDA device-side assert in torch.multinomial under FA2.
+            # Optimisations we DO take below:
+            #   - StoppingCriteria on the JSON close bracket (skip dead tokens)
+            #   - smaller max_new_tokens budget (2048 instead of 4096)
+            #   - Qwen2.5-VL-3B-Instruct-AWQ if/when configured (env var)
             self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_path, torch_dtype=torch.float16, device_map=device
+                model_path,
+                torch_dtype=torch.float16,
+                device_map=device,
+                attn_implementation="sdpa",
+            )
+            print(
+                "[QwenOCR] Loaded with fp16 + attn_implementation=sdpa "
+                "(FA2 disabled — see comment in qwen_ocr.py)",
+                flush=True,
             )
         self.model.eval()
 
@@ -163,7 +221,7 @@ class QwenOCR:
         print(f"[QwenOCR] Model loaded in {time.time() - load_start:.1f}s on {self.device}")
         print(f"[QwenOCR] Speed config: max_pixels=12544, max_new_tokens=15, batch_size={self.batch_size}")
         if self.hash_cache:
-            print(f"[QwenOCR] Perceptual hash cache: ENABLED (max_size=2048, hamming_threshold=5)")
+            print(f"[QwenOCR] Perceptual hash cache: ENABLED (max_size={self.hash_cache.max_size}, hamming_threshold={self.hash_cache.hamming_threshold})")
 
     def _build_prompt(self) -> str:
         messages = [{
@@ -314,6 +372,301 @@ class QwenOCR:
         output_ids = generated_ids[:, inputs.input_ids.shape[1]:]
         texts = self.processor.batch_decode(output_ids, skip_special_tokens=True)
         return [t.strip() for t in texts]
+
+    # ------------------------------------------------------------------
+    # End-to-end OCR (Qwen detect + recognise — replaces PaddleOCR step)
+    # ------------------------------------------------------------------
+
+    # Canonical Qwen2.5-VL OCR prompt (from QwenLM/Qwen2.5-VL/cookbooks/ocr.ipynb).
+    # The "line-level" variant is the one the team trained on; "word-level" splits
+    # text into per-word boxes and is noisier on game UI which mixes labels and
+    # values on the same line.
+    FULLIMG_OCR_PROMPT = (
+        "Spotting all the text in the image with line-level, "
+        "and output in JSON format."
+    )
+
+    # Pixel budget for full-image OCR. The Qwen2.5-VL cookbook suggests
+    # 2048*28*28 (~1.6M pixels) for best legibility on UI screenshots, but
+    # ViT attention is O(n²) and on a 24 GB GPU shared with another Qwen copy
+    # (from the uvicorn re-import quirk) that OOMs at 2019 visual tokens.
+    # 1024 visual tokens = 1024*28*28 = 802816 pixels = ~1067x756 effective
+    # resolution after smart_resize on 1920x1080 input. Still legible for
+    # 14-18 px game UI text. Adjust via env var if you have headroom:
+    #   QWEN_FULL_OCR_MAX_TOKENS=1536  -> larger images, more VRAM
+    #   QWEN_FULL_OCR_MAX_TOKENS=768   -> faster, may miss small text
+    _FULLIMG_DEFAULT_MAX_TOKENS = 1024
+    _FULLIMG_DEFAULT_MIN_TOKENS = 256
+
+    def _get_fullimg_processor(self):
+        """Lazy-load a separate processor for full-image OCR.
+
+        Default self.processor caps at 12544 pixels — fine for tiny crops, way
+        too small for a full 1920x1080 screenshot. We keep both processors so
+        the cropped-recognition path stays fast while end-to-end OCR has enough
+        pixel budget to read game UI text.
+        """
+        if self._fullimg_processor is not None:
+            return self._fullimg_processor
+        import os as _os
+        from transformers import AutoProcessor
+        max_tokens = int(_os.environ.get(
+            'QWEN_FULL_OCR_MAX_TOKENS', self._FULLIMG_DEFAULT_MAX_TOKENS,
+        ))
+        min_tokens = int(_os.environ.get(
+            'QWEN_FULL_OCR_MIN_TOKENS', self._FULLIMG_DEFAULT_MIN_TOKENS,
+        ))
+        print(
+            f"[QwenOCR-full] processor min_pixels={min_tokens}*28*28={min_tokens*28*28}, "
+            f"max_pixels={max_tokens}*28*28={max_tokens*28*28}",
+            flush=True,
+        )
+        self._fullimg_processor = AutoProcessor.from_pretrained(
+            self.model_path,
+            min_pixels=min_tokens * 28 * 28,
+            max_pixels=max_tokens * 28 * 28,
+        )
+        # Decoder-only models prefer left-padding for batch generation.
+        self._fullimg_processor.tokenizer.padding_side = 'left'
+        return self._fullimg_processor
+
+    @staticmethod
+    def _parse_grounding_json(raw: str) -> List[Dict]:
+        """Parse Qwen2.5-VL grounding JSON output.
+
+        Tolerates: leading ```json fences, trailing prose, single-quote dicts
+        (the cookbook itself uses single quotes in its example output), and
+        truncated trailing items when max_new_tokens is hit.
+        """
+        import re
+        import json
+        s = raw.strip()
+        # Strip a markdown fence if present.
+        m = re.search(r'```(?:json)?\s*(.+?)\s*```', s, re.DOTALL)
+        if m:
+            s = m.group(1).strip()
+        # Try strict JSON first.
+        try:
+            data = json.loads(s)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        # Find the first JSON array span and parse just that.
+        m = re.search(r'\[.*\]', s, re.DOTALL)
+        if m:
+            blob = m.group(0)
+            try:
+                data = json.loads(blob)
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                # Single-quote → double-quote (lossy but matches cookbook samples).
+                try:
+                    import ast
+                    data = ast.literal_eval(blob)
+                    if isinstance(data, list):
+                        return data
+                except Exception:
+                    pass
+        # Last-ditch: scrape all `bbox_2d`/`text_content` items individually.
+        items = []
+        item_re = re.compile(
+            r'\{\s*[\'"]bbox_2d[\'"]\s*:\s*\[\s*([\-\d\.]+)\s*,\s*([\-\d\.]+)\s*,'
+            r'\s*([\-\d\.]+)\s*,\s*([\-\d\.]+)\s*\]\s*,\s*'
+            r'[\'"]text_content[\'"]\s*:\s*[\'"]((?:[^\'"]|\\.)*)[\'"]\s*\}',
+            re.DOTALL,
+        )
+        for x1, y1, x2, y2, text in item_re.findall(s):
+            try:
+                items.append({
+                    'bbox_2d': [float(x1), float(y1), float(x2), float(y2)],
+                    'text_content': text,
+                })
+            except Exception:
+                continue
+        return items
+
+    class _StopOnJsonClose:
+        """Stop generation as soon as the model emits the closing `]` of the
+        outer JSON array. Saves the typical ~100 trailing tokens (whitespace,
+        end-of-message tokens) that the model would otherwise generate.
+
+        Implemented as a transformers StoppingCriteria. We decode only the
+        tail of the generated tokens each step (8 tokens is plenty to catch
+        `]\\n` or `]}`) and check for a string match — the `]` token can
+        merge with adjacent whitespace in different ways (`"]"`, `"]\\n"`,
+        `" ]\\n"`, `"]\\n\\n"`), so token-id matching is fragile.
+        """
+        def __init__(self, tokenizer):
+            self.tokenizer = tokenizer
+
+        def __call__(self, input_ids, scores, **kwargs):
+            tail = input_ids[0, -8:]
+            try:
+                text = self.tokenizer.decode(tail, skip_special_tokens=True)
+            except Exception:
+                return False
+            stripped = text.rstrip()
+            # JSON close on the whole array; tolerate either `]` alone or `}]`
+            # (when the LAST item is an object closing right before the array
+            # close, which is the normal Qwen output shape).
+            return stripped.endswith(']')
+
+    @torch.inference_mode()
+    def detect_and_recognize(
+        self,
+        image: Image.Image,
+        max_new_tokens: int = 2048,
+    ) -> "tuple[List[str], List[List[int]]]":
+        """End-to-end OCR via Qwen2.5-VL grounding.
+
+        Returns
+        -------
+        (texts, bboxes_pixel)
+            ``texts``  — list of recognised strings, one per detected line.
+            ``bboxes_pixel`` — matching list of [x1, y1, x2, y2] in **original
+            image pixel space**. The model emits coords in the smart-resized
+            tensor space; we rescale here using image_grid_thw so callers get
+            coordinates that line up with the input image.
+        """
+        # Beacons: confirm we entered detect_and_recognize and where it dies.
+        # Stdout from request handlers isn't reaching our log; this gives us
+        # ground truth from inside the function.
+        import os as _os
+        _beacon = _os.environ.get(
+            'QWEN_OCR_BEACON_FILE',
+            'F:/Raptor-X-V2/omniparser-server/parse-test/logs/qwen_full_ocr_beacon.txt',
+        )
+
+        def _b(msg: str) -> None:
+            try:
+                with open(_beacon, 'a', encoding='utf-8') as f:
+                    f.write(f"{time.time():.3f} {msg}\n")
+            except Exception:
+                pass
+
+        _b(f"ENTER detect_and_recognize image={image.size}")
+
+        if self.vllm_url:
+            # Routing through vLLM not yet implemented for grounding; fall back
+            # to local HF if model is loaded, else raise.
+            if self.model is None:
+                raise RuntimeError(
+                    "Qwen full-image OCR via vLLM is not yet supported; "
+                    "start the server without --vllm_url to enable it."
+                )
+
+        try:
+            proc = self._get_fullimg_processor()
+            _b("got fullimg processor")
+            image_rgb = image.convert("RGB")
+            orig_w, orig_h = image_rgb.size
+
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": self.FULLIMG_OCR_PROMPT},
+                ],
+            }]
+            prompt_text = proc.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+            _b(f"prompt_text built len={len(prompt_text)}")
+            inputs = proc(
+                text=[prompt_text],
+                images=[image_rgb],
+                return_tensors="pt",
+            ).to(self.device)
+            _b(f"inputs prepared keys={list(inputs.keys())} input_ids_shape={tuple(inputs.input_ids.shape)}")
+
+            t0 = time.perf_counter()
+            # Greedy decoding: do_sample=False is required with FA2 + bf16 —
+            # the cookbook's `do_sample=True, temperature=1e-6` sampling path
+            # blows up `torch.multinomial` when FA2 produces underflow probs in
+            # bf16 (CUDA device-side assert in _sample). Greedy sidesteps
+            # multinomial entirely; for OCR this matches the documented
+            # behaviour at temperature=0 anyway.
+            from transformers import StoppingCriteriaList, StoppingCriteria
+            class _Stop(StoppingCriteria):
+                def __init__(self, helper): self.helper = helper
+                def __call__(self, input_ids, scores, **kw): return self.helper(input_ids, scores, **kw)
+            stop = StoppingCriteriaList([_Stop(self._StopOnJsonClose(proc.tokenizer))])
+            gen_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                num_beams=1,
+                stopping_criteria=stop,
+            )
+            t1 = time.perf_counter()
+            _b(f"generate done {t1-t0:.2f}s gen_ids_shape={tuple(gen_ids.shape)}")
+            out_ids = gen_ids[:, inputs.input_ids.shape[1]:]
+            raw = proc.batch_decode(out_ids, skip_special_tokens=True)[0]
+            _b(f"decoded raw len={len(raw)}")
+        except Exception as _exc:
+            import traceback as _tb
+            _b(f"EXCEPTION: {type(_exc).__name__}: {_exc}")
+            _b("TRACEBACK:\n" + _tb.format_exc())
+            raise
+        # Debug: dump raw output to a file (uvicorn captures stdout in a way that
+        # makes interactive debugging hard). Each call overwrites the same file.
+        try:
+            import os as _os
+            _dbg_path = _os.environ.get(
+                'QWEN_OCR_DEBUG_FILE',
+                'F:/Raptor-X-V2/omniparser-server/parse-test/logs/qwen_full_ocr_last_raw.txt',
+            )
+            with open(_dbg_path, 'w', encoding='utf-8') as f:
+                f.write(raw)
+        except Exception:
+            pass
+        # Also try stdout (will appear if buffering is friendly).
+        _preview = raw if len(raw) <= 600 else raw[:600] + "...<truncated>"
+        print(f"[QwenOCR-full] RAW OUTPUT >>>{_preview}<<<", flush=True)
+
+        # Rescale resized-space coords back to original image pixels.
+        # image_grid_thw is shape (1, 3) = (T, H_grid, W_grid); each grid cell
+        # is 14x14 (the patch size). Resized image dims = grid * 14.
+        try:
+            grid_thw = inputs['image_grid_thw'][0].tolist()
+            resized_h = grid_thw[1] * 14
+            resized_w = grid_thw[2] * 14
+        except Exception:
+            resized_h, resized_w = orig_h, orig_w
+        sx = orig_w / max(resized_w, 1)
+        sy = orig_h / max(resized_h, 1)
+
+        items = self._parse_grounding_json(raw)
+        texts: List[str] = []
+        bboxes: List[List[int]] = []
+        for item in items:
+            bb = item.get('bbox_2d') or item.get('bbox') or item.get('box')
+            if not isinstance(bb, list) or len(bb) != 4:
+                continue
+            try:
+                x1 = max(0, min(orig_w - 1, int(round(float(bb[0]) * sx))))
+                y1 = max(0, min(orig_h - 1, int(round(float(bb[1]) * sy))))
+                x2 = max(0, min(orig_w,     int(round(float(bb[2]) * sx))))
+                y2 = max(0, min(orig_h,     int(round(float(bb[3]) * sy))))
+            except (TypeError, ValueError):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            text = (item.get('text_content') or item.get('text') or '').strip()
+            if not text:
+                continue
+            texts.append(text)
+            bboxes.append([x1, y1, x2, y2])
+
+        print(
+            f"[QwenOCR-full] detect+recognise on {self.device_str}: "
+            f"{t1-t0:.2f}s, raw_chars={len(raw)}, "
+            f"items_parsed={len(items)}, items_kept={len(texts)}, "
+            f"resized={resized_w}x{resized_h}, orig={orig_w}x{orig_h}"
+        )
+        return texts, bboxes
 
     async def _vllm_ocr_single(self, crop: Image.Image) -> str:
         """Single crop OCR via vLLM API."""

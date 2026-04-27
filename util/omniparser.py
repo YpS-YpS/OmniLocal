@@ -99,8 +99,14 @@ class Omniparser(object):
                 quantize=quantize,
             )
 
-        # Thread pool for parallel GPU execution
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        # Determinism: dedicated single-worker executors so YOLO and PaddleOCR
+        # always run on the SAME thread across all requests. The previous single
+        # ThreadPoolExecutor(max_workers=4) cycled threads per request, exposing
+        # PaddleOCR's thread-local internal buffers as a stateful nondeterminism
+        # source — alternating 6/3 element output on a marginal-contrast input
+        # was traced to which worker happened to handle the OCR submission.
+        self._yolo_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="de2-yolo")
+        self._ocr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="de2-ocr")
 
         # Determine active OCR engine
         if self.qwen_ocr is not None:
@@ -136,20 +142,31 @@ class Omniparser(object):
         print(f'[DE2] YOLO detection on {self.gpu_detect}: {t1-t0:.3f}s ({len(xyxy)} boxes)')
         return xyxy, logits, phrases
 
-    def _run_ocr(self, image, text_threshold, use_paddleocr, qwen_ocr_instance):
-        """Run OCR (PaddleOCR detection + Qwen recognition) on the OCR GPU. Called from thread."""
+    def _run_ocr(self, image, text_threshold, use_paddleocr, qwen_ocr_instance,
+                 qwen_full_ocr=False, paddle_det_overrides=None):
+        """Run OCR on the OCR GPU. Called from thread.
+
+        Two modes:
+          - Hybrid (default): PaddleOCR detects polygons, Qwen recognises text
+            in each polygon.
+          - Full Qwen (when qwen_full_ocr=True): Qwen2.5-VL detects + recognises
+            in a single grounding call. Replaces PaddleOCR entirely.
+        """
         t0 = time.perf_counter()
         try:
             (text, ocr_bbox), _ = check_ocr_box(
                 image, display_img=False, output_bb_format='xyxy',
                 easyocr_args={'text_threshold': text_threshold},
-                use_paddleocr=use_paddleocr, qwen_ocr=qwen_ocr_instance
+                use_paddleocr=use_paddleocr, qwen_ocr=qwen_ocr_instance,
+                qwen_full_ocr=qwen_full_ocr,
+                paddle_det_overrides=paddle_det_overrides,
             )
         except Exception as e:
             print(f'[DE2] OCR failed on {self.gpu_ocr}: {e} — returning empty results')
             return [], []
         t1 = time.perf_counter()
-        print(f'[DE2] OCR on {self.gpu_ocr}: {t1-t0:.3f}s ({len(text)} texts)')
+        mode = 'qwen-full' if qwen_full_ocr else ('qwen-hybrid' if qwen_ocr_instance else ('paddle' if use_paddleocr else 'easyocr'))
+        print(f'[DE2] OCR ({mode}) on {self.gpu_ocr}: {t1-t0:.3f}s ({len(text)} texts)')
         return text, ocr_bbox
 
     def parse(self, image_base64: str, override_config: dict = None):
@@ -170,6 +187,19 @@ class Omniparser(object):
 
         use_paddleocr = override_config.get('use_paddleocr', self.config.get('use_paddleocr', True))
         use_qwen_ocr = override_config.get('use_qwen_ocr', self.config.get('use_qwen_ocr', False))
+        # qwen_full_ocr: Qwen does BOTH detection and recognition (no PaddleOCR call).
+        # Defaults to False so existing hybrid behaviour is preserved unless the
+        # caller explicitly opts in via the request body.
+        qwen_full_ocr = override_config.get('qwen_full_ocr', self.config.get('qwen_full_ocr', False))
+        # PaddleOCR DBNet detection knobs — gather all four into one dict so we
+        # can apply them in a single mutate-then-restore block around the
+        # paddle_ocr.ocr() call. None means "don't override".
+        paddle_det_overrides = {
+            k: override_config.get(k)
+            for k in ('det_db_thresh', 'det_db_box_thresh',
+                      'det_db_unclip_ratio', 'det_db_score_mode')
+            if override_config.get(k) is not None
+        } or None
         iou_threshold = override_config.get('IOU_THRESHOLD', self.config.get('IOU_THRESHOLD', 0.1))
         box_threshold = override_config.get('BOX_TRESHOLD', self.config.get('BOX_TRESHOLD', 0.05))
         text_threshold = override_config.get('text_threshold', 0.8)
@@ -178,7 +208,14 @@ class Omniparser(object):
         imgsz = override_config.get('imgsz', None)
 
         qwen_ocr_instance = self.qwen_ocr if use_qwen_ocr and self.qwen_ocr is not None else None
-        ocr_mode = 'qwen_vlm' if qwen_ocr_instance else ('paddleocr' if use_paddleocr else 'easyocr')
+        if qwen_full_ocr and qwen_ocr_instance is None:
+            print('[DE2] qwen_full_ocr=True requested but Qwen OCR is not loaded; '
+                  'falling back to hybrid/paddle path.')
+            qwen_full_ocr = False
+        ocr_mode = (
+            'qwen_full' if (qwen_ocr_instance and qwen_full_ocr)
+            else ('qwen_hybrid' if qwen_ocr_instance else ('paddleocr' if use_paddleocr else 'easyocr'))
+        )
         print(f'OCR config: mode={ocr_mode}, box_threshold={box_threshold}, dual_gpu={self.dual_gpu}')
 
         t_start = time.perf_counter()
@@ -193,12 +230,15 @@ class Omniparser(object):
             image_for_yolo = image.copy()
             image_for_ocr = image.copy()
 
-            # Fire both at the same time on different GPUs
-            yolo_future = self._executor.submit(
+            # Fire both at the same time on different GPUs — bound to dedicated
+            # single-worker executors so the same thread handles each model
+            # across all requests (eliminates worker-cycling nondeterminism).
+            yolo_future = self._yolo_executor.submit(
                 self._run_yolo, image_for_yolo, box_threshold, scale_img, imgsz
             )
-            ocr_future = self._executor.submit(
-                self._run_ocr, image_for_ocr, text_threshold, use_paddleocr, qwen_ocr_instance
+            ocr_future = self._ocr_executor.submit(
+                self._run_ocr, image_for_ocr, text_threshold, use_paddleocr,
+                qwen_ocr_instance, qwen_full_ocr, paddle_det_overrides,
             )
 
             # Wait for both to complete
@@ -206,7 +246,10 @@ class Omniparser(object):
             text, ocr_bbox = ocr_future.result()
         else:
             # Single GPU: run sequentially (can't share GPU between threads safely)
-            text, ocr_bbox = self._run_ocr(image, text_threshold, use_paddleocr, qwen_ocr_instance)
+            text, ocr_bbox = self._run_ocr(
+                image, text_threshold, use_paddleocr, qwen_ocr_instance,
+                qwen_full_ocr, paddle_det_overrides,
+            )
             yolo_result = self._run_yolo(image, box_threshold, scale_img, imgsz)
 
         t_parallel = time.perf_counter()

@@ -43,3 +43,19 @@ imgs/*_labeled.*
 .claude/
 build/
 *.egg-info/
+# Local rollback backups (Phase 1 determinism work)
+*.bak.determinism
+
+# Parse-test artefacts (heavy + reproducible)
+parse-test/before/
+parse-test/after/sweep_*.png
+parse-test/after/sweep_*.json
+parse-test/after/sweep_*.csv
+parse-test/after/contam_*
+parse-test/after/tick_*_run*.png
+parse-test/after/tick_*_run*.json
+parse-test/after/tick_*_summary.json
+parse-test/after/contamination.json
+parse-test/after/_REPORT.md
+parse-test/logs/
+parse-test/inspect_attn.py

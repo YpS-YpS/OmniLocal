@@ -25,6 +25,21 @@ warnings.filterwarnings('ignore', message='.*ccache.*')
 warnings.filterwarnings('ignore', category=UserWarning, module='paddle')
 os.environ['GLOG_minloglevel'] = '2'  # Suppress INFO/WARNING logs from glog
 
+# Determinism: lock seeds + disable oneDNN reduction-order variance + single-thread
+# Without this, PaddleOCR DBNet detection has been measured to drop ALL polygons in
+# ~40% of repeat calls on borderline-contrast UI (Civ VI exit dialog) — score-mode='slow'
+# + use_dilation=True + multi-thread oneDNN reductions push marginal scores across the
+# binarisation threshold inconsistently. See PaddlePaddle/Paddle#11057.
+import random as _random
+_random.seed(0)
+import numpy as _np
+_np.random.seed(0)
+try:
+    import paddle as _paddle
+    _paddle.seed(0)
+except Exception:
+    pass
+
 from paddleocr import PaddleOCR
 reader = easyocr.Reader(['en'])
 paddle_ocr = PaddleOCR(
@@ -35,7 +50,9 @@ paddle_ocr = PaddleOCR(
     max_batch_size=1024,
     use_dilation=True,  # improves accuracy
     det_db_score_mode='slow',  # improves accuracy
-    rec_batch_num=1024)
+    rec_batch_num=1024,
+    cpu_threads=1,        # determinism: single-threaded reduction order
+    enable_mkldnn=False)  # determinism: oneDNN/MKL-DNN reduction order is non-stable
 import time
 import base64
 
@@ -521,7 +538,47 @@ def get_xywh_yolo(input):
     x, y, w, h = int(x), int(y), int(w), int(h)
     return x, y, w, h
 
-def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, output_bb_format='xywh', goal_filtering=None, easyocr_args=None, use_paddleocr=False, qwen_ocr=None):
+def _apply_paddle_det_overrides(overrides):
+    """Mutate the global paddle_ocr's text-detector postprocess_op thresholds
+    in-place and return a snapshot of the previous values so the caller can
+    restore them after the OCR call.
+
+    Safe ONLY because all OCR work in this server runs on a single dedicated
+    worker thread (omniparser._ocr_executor with max_workers=1). If that ever
+    becomes a thread pool again, this needs a lock or per-request PaddleOCR
+    instances.
+    """
+    if not overrides:
+        return None
+    pp = paddle_ocr.text_detector.postprocess_op
+    snap = {
+        'thresh': pp.thresh,
+        'box_thresh': pp.box_thresh,
+        'unclip_ratio': pp.unclip_ratio,
+        'score_mode': pp.score_mode,
+    }
+    if 'det_db_thresh' in overrides:
+        pp.thresh = float(overrides['det_db_thresh'])
+    if 'det_db_box_thresh' in overrides:
+        pp.box_thresh = float(overrides['det_db_box_thresh'])
+    if 'det_db_unclip_ratio' in overrides:
+        pp.unclip_ratio = float(overrides['det_db_unclip_ratio'])
+    if 'det_db_score_mode' in overrides:
+        pp.score_mode = str(overrides['det_db_score_mode'])
+    return snap
+
+
+def _restore_paddle_det(snapshot):
+    if not snapshot:
+        return
+    pp = paddle_ocr.text_detector.postprocess_op
+    pp.thresh = snapshot['thresh']
+    pp.box_thresh = snapshot['box_thresh']
+    pp.unclip_ratio = snapshot['unclip_ratio']
+    pp.score_mode = snapshot['score_mode']
+
+
+def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, output_bb_format='xywh', goal_filtering=None, easyocr_args=None, use_paddleocr=False, qwen_ocr=None, qwen_full_ocr=False, paddle_det_overrides=None):
     if isinstance(image_source, str):
         image_source = Image.open(image_source)
     if image_source.mode == 'RGBA':
@@ -529,6 +586,66 @@ def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, out
         image_source = image_source.convert('RGB')
     image_np = np.array(image_source)
     w, h = image_source.size
+
+    # Per-request PaddleOCR detection threshold mutation. The snapshot is
+    # restored unconditionally in the finally block so a single phase's
+    # overrides never leak to the next request.
+    _det_snapshot = _apply_paddle_det_overrides(paddle_det_overrides)
+    if _det_snapshot is not None:
+        pp = paddle_ocr.text_detector.postprocess_op
+        print(
+            f"[Paddle-det override] thresh={pp.thresh}, box_thresh={pp.box_thresh}, "
+            f"unclip_ratio={pp.unclip_ratio}, score_mode={pp.score_mode}",
+            flush=True,
+        )
+    try:
+        return _check_ocr_box_inner(
+            image_source, image_np, w, h,
+            display_img=display_img,
+            output_bb_format=output_bb_format,
+            goal_filtering=goal_filtering,
+            easyocr_args=easyocr_args,
+            use_paddleocr=use_paddleocr,
+            qwen_ocr=qwen_ocr,
+            qwen_full_ocr=qwen_full_ocr,
+        )
+    finally:
+        _restore_paddle_det(_det_snapshot)
+
+
+def _check_ocr_box_inner(image_source, image_np, w, h, display_img, output_bb_format, goal_filtering, easyocr_args, use_paddleocr, qwen_ocr, qwen_full_ocr):
+    """Body of check_ocr_box, separated so the outer wrapper can install/restore
+    PaddleOCR detection-threshold overrides via try/finally without having to
+    weave them through every return point."""
+
+    if qwen_ocr is not None and qwen_full_ocr:
+        # Full Qwen mode: Qwen2.5-VL detects AND recognises text in one call.
+        # Replaces PaddleOCR's detection step entirely (no Paddle call). Useful
+        # when PaddleOCR's DBNet clubs separate UI labels into one polygon
+        # (Cyberpunk top-tab bar) or drops marginal-contrast detections (Civ VI
+        # exit dialog). Costs ~2-5s per call vs ~0.5s for the hybrid path.
+        text, bboxes_pixel = qwen_ocr.detect_and_recognize(image_source)
+        # Match the legacy return shape: text list + bb list in requested format.
+        # No 'coord' polygon list (Qwen returns axis-aligned rects only) — only
+        # bb is needed downstream.
+        coord = []
+        full_result = []  # for the display-img branch below
+        if display_img:
+            opencv_img = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+            bb = []
+            for x1, y1, x2, y2 in bboxes_pixel:
+                bb.append((x1, y1, x2 - x1, y2 - y1))
+                cv2.rectangle(opencv_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            plt.imshow(cv2.cvtColor(opencv_img, cv2.COLOR_BGR2RGB))
+        else:
+            if output_bb_format == 'xyxy':
+                bb = [tuple(b) for b in bboxes_pixel]
+            elif output_bb_format == 'xywh':
+                bb = [(b[0], b[1], b[2]-b[0], b[3]-b[1]) for b in bboxes_pixel]
+            else:
+                bb = [tuple(b) for b in bboxes_pixel]
+        print(f'[QwenOCR-full] returned {len(text)} text regions to caller')
+        return (text, bb), goal_filtering
 
     if qwen_ocr is not None:
         # Hybrid mode: PaddleOCR detection + Qwen2.5-VL recognition
